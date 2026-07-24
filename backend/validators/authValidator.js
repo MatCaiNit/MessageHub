@@ -21,6 +21,6 @@ export const loginRules = [
     body('password').notEmpty().withMessage('Mật khẩu không được để trống')
 ];
 
-export const RefreshTokenRules = [
+export const refreshTokenRules = [
     body('refreshToken').notEmpty().withMessage('Refresh token không được để trống')
 ];

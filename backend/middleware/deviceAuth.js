@@ -1,5 +1,5 @@
-import Device from '../models/device.js';
-import { hashApiKey } from '../utils/generateToken.js';
+import Device from '../models/Device.js';
+import { hashApiKey } from '../utils/generateApiKey.js';
 
 export const deviceProtect = async (req, res, next) => {
   const apiKey = req.headers['x-device-key'];

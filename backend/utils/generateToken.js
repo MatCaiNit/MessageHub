@@ -43,6 +43,6 @@ export const revokeRefreshToken = async (rawToken) => {
   await RefreshToken.deleteOne({ tokenHash });
 }
 
-export const revokeAllRefreshTokensForUser = async (userId) => {
+export const revokeAllRefreshTokens = async (userId) => {
   await RefreshToken.deleteMany({ userId });
 }

@@ -1,7 +1,7 @@
 import Device from '../models/Device.js';
 import User from '../models/User.js';
 import Conversation from '../models/Conversation.js';
-import { generateApiKey } from '../utils/generateToken.js';
+import { generateApiKey } from '../utils/generateApiKey.js';
 
 
 export const registerDevice = async (req, res) => {
