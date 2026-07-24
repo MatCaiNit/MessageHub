@@ -13,7 +13,7 @@ import { registerDeviceRules, addMemberRules, deviceIdParamRule } from '../valid
 
 const router = express.Router();
 
-router.use(protect); // tat ca route quan ly thiet bi deu can dang nhap (human), khong dung apiKey o day
+router.use(protect);
 
 router.post('/', registerDeviceRules, validate, registerDevice);
 router.get('/', listMyDevices);

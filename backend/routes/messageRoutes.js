@@ -12,10 +12,8 @@ import { sendDeviceMessageRules, messageIdParamRule } from '../validators/messag
 
 const router = express.Router();
 
-// Route rieng cho THIET BI - xac thuc bang apiKey (X-Device-Key), khong dung JWT
 router.post('/device', deviceProtect, sendDeviceMessageRules, validate, sendDeviceMessage);
 
-// Cac route ben duoi danh cho HUMAN - xac thuc bang JWT
 router.use(protect);
 
 router.delete('/:id', messageIdParamRule, validate, deleteMessage);

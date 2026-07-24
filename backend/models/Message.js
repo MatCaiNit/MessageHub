@@ -25,7 +25,7 @@ const messageSchema = new mongoose.Schema(
     isDeleted: { type: Boolean, default: false }, // xoa phia nguoi gui (chi minh khong thay)
     isRecalled: { type: Boolean, default: false }, // thu hoi - moi nguoi trong hoi thoai deu khong thay noi dung goc
 
-    deviceData: { type: mongoose.Schema.Types.Mixed, default: null }, // Du lieu tho tu thiet bi nhung (vi du: { temperature: 36, humidity: 55 }) - de FE hien thi dep hon neu can
+    deviceData: { type: mongoose.Schema.Types.Mixed, default: null }, // Du lieu tho tu thiet bi nhung (vi du: { temperature: 36, humidity: 55 })
   },
   { timestamps: true }
 );

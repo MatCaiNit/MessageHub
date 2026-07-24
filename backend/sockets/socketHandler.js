@@ -3,6 +3,7 @@ import User from '../models/User.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import { SOCKET_EVENTS } from './socketEvents.js';
+import { sendPushToUser } from '../services/pushService.js';
 
 // Luu map userId -> socketId de biet ai dang online
 export const onlineUsers = new Map();
@@ -22,6 +23,35 @@ export const broadcastToConversation = async (conversationId, event, payload) =>
   conversation.participants.forEach((participantId) => {
     ioInstance.to(String(participantId)).emit(event, payload);
   });
+
+  // Neu day la 1 tin nhan moi, gui push notification cho nhung ai dang OFFLINE
+  // (khong co trong onlineUsers) va khong phai nguoi gui
+  if (event === SOCKET_EVENTS.RECEIVE_MESSAGE) {
+    notifyOfflineParticipants(conversation, payload);
+  }
+};
+
+const notifyOfflineParticipants = async (conversation, message) => {
+  const senderId = String(message.senderId?._id || message.senderId);
+  const offlineIds = conversation.participants
+    .map(String)
+    .filter((pid) => pid !== senderId && !onlineUsers.has(pid));
+
+  if (offlineIds.length === 0) return;
+
+  const offlineUsers = await User.find({ _id: { $in: offlineIds } });
+  const senderName = message.senderId?.username || 'Ai do';
+  const preview = (message.content || '').slice(0, 80);
+
+  await Promise.all(
+    offlineUsers.map((u) =>
+      sendPushToUser(u, {
+        title: conversation.type === 'group' ? conversation.name || 'Nhom chat' : senderName,
+        body: conversation.type === 'group' ? `${senderName}: ${preview}` : preview,
+        data: { conversationId: String(conversation._id) },
+      })
+    )
+  );
 };
 
 export const initSocket = (io) => {

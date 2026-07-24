@@ -14,4 +14,10 @@ export const SOCKET_EVENTS = {
   USER_TYPING: 'user_typing',
   USER_STOP_TYPING: 'user_stop_typing',
   ERROR_MESSAGE: 'error_message',
+
+   // Server -> Client: cap nhat nhom (co the dung de FE tu refresh sidebar/chat header)
+  GROUP_UPDATED: 'group_updated',
+  GROUP_MEMBER_JOINED: 'group_member_joined',
+  GROUP_MEMBER_LEFT: 'group_member_left',
+  GROUP_MEMBER_KICKED: 'group_member_kicked',
 };

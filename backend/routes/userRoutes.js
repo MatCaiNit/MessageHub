@@ -23,4 +23,15 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// PATCH /api/users/fcm-token - client dang ky (hoac xoa) token push notification cua thiet bi hien tai
+router.patch('/fcm-token', async (req, res) => {
+  try {
+    const { fcmToken } = req.body; // truyen null/'' de huy dang ky (vi du khi logout)
+    await User.findByIdAndUpdate(req.userId, { fcmToken: fcmToken || null });
+    res.json({ message: 'Da cap nhat fcm token' });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+});
+
 export default router;

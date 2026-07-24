@@ -3,9 +3,7 @@ import Conversation from '../models/Conversation.js';
 import { broadcastToConversation } from '../sockets/socketHandler.js';
 import { SOCKET_EVENTS } from '../sockets/socketEvents.js';
 
-// POST /api/messages/device - THIET BI (ESP32) goi API nay bang apiKey (qua middleware deviceAuth)
-// de gui du lieu/su kien len, backend luu vao Message roi broadcast qua Socket.IO cho moi nguoi
-// dang co mat trong conversation cua thiet bi do
+// POST /api/messages/device 
 export const sendDeviceMessage = async (req, res) => {
   try {
     const { content, type, deviceData } = req.body;

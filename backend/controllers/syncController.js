@@ -1,9 +1,7 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 
-// GET /api/sync?since=<ISO timestamp> - lay tat ca du lieu moi hon "since"
-// Dung khi client mat ket noi 1 luc (mat mang, dong app...) roi mo lai,
-// thay vi tai lai toan bo lich su, chi hoi "co gi moi hon thoi diem nay khong"
+// GET /api/sync?since=<ISO timestamp>
 export const syncData = async (req, res) => {
   try {
     const { since } = req.query;

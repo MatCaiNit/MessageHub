@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema(
     type: { type: String, enum: ['human', 'device'], default: 'human' },
     isOnline: { type: Boolean, default: false },
     lastSeen: { type: Date, default: Date.now },
+    fcmToken: { type: String, default: null }, // Firebase Cloud Messaging token de gui push notification
   },
   { timestamps: true }
 );
