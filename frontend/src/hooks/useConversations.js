@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
 import { conversationApi, userApi } from '../api';
 import { useSocket } from '../context/SocketContext';
 
@@ -34,8 +33,8 @@ export function useConversations() {
     }
   }, [page]);
 
-  // Load lai khi man hinh duoc focus
-  useFocusEffect(useCallback(() => { loadConversations(true); }, []));
+  // Load khi component mount lan dau
+  useEffect(() => { loadConversations(true); }, []);
 
   // Cap nhat khi co tin nhan moi tu socket
   useEffect(() => {

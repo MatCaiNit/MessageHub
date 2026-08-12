@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { API_URL } from '../api/config';
 import { useAuth } from './AuthContext';
@@ -7,32 +7,37 @@ const SocketContext = createContext(null);
 
 export const SocketProvider = ({ children }) => {
   const { accessToken } = useAuth();
-  const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    // Co token -> ket noi socket
-    if (accessToken) {
-      const socket = io(API_URL, {
-        auth: { token: accessToken },
-        transports: ['websocket'],
-      });
+    if (!accessToken) return;
 
-      socket.on('connect', () => setConnected(true));
-      socket.on('disconnect', () => setConnected(false));
+    const newSocket = io(API_URL, {
+      auth: { token: accessToken },
+      transports: ['websocket'],
+    });
 
-      socketRef.current = socket;
+    newSocket.on('connect', () => {
+      setConnected(true);
+    });
+    newSocket.on('disconnect', () => {
+      setConnected(false);
+    });
 
-      return () => {
-        socket.disconnect();
-        socketRef.current = null;
-        setConnected(false);
-      };
-    }
+    // Dung useState thay vi useRef de khi socket san sang,
+    // cac component dung useSocket() tu dong render lai va nhan duoc socket that
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+      setSocket(null);
+      setConnected(false);
+    };
   }, [accessToken]);
 
   return (
-    <SocketContext.Provider value={{ socket: socketRef.current, connected }}>
+    <SocketContext.Provider value={{ socket, connected }}>
       {children}
     </SocketContext.Provider>
   );

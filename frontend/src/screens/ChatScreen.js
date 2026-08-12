@@ -4,11 +4,11 @@ import {
   StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
 } from 'react-native';
 import { Icon } from '../utils/icons';
+import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 import { useMessages } from '../hooks/useMessages';
 import { useTyping } from '../hooks/useTyping';
 import MessageBubble from '../components/MessageBubble';
 import TypingIndicator from '../components/TypingIndicator';
-import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 
 export default function ChatScreen({ route, navigation }) {
   const { conversationId, title, convType } = route.params;
@@ -22,9 +22,16 @@ export default function ChatScreen({ route, navigation }) {
   useEffect(() => {
     navigation.setOptions({
       title,
-      headerRight: () => convType === 'device'
-        ? <Text style={{ marginRight: 14, fontSize: 18 }}>⚡</Text>
-        : null,
+      headerRight: () => convType === 'group' ? (
+        <TouchableOpacity
+          onPress={() => navigation.navigate('GroupInfo', { conversationId, title })}
+          style={{ marginRight: 14 }}
+        >
+          <Text style={{ fontSize: 16, color: C.accent }}>👥</Text>
+        </TouchableOpacity>
+      ) : convType === 'device' ? (
+        <Text style={{ marginRight: 14, fontSize: 18 }}>⚡</Text>
+      ) : null,
     });
     loadMessages(true);
   }, [conversationId]);

@@ -21,8 +21,18 @@ export const conversationApi = {
     client.get(`/api/conversations?page=${page}&limit=${limit}`),
   create: (participantId) =>
     client.post('/api/conversations', { participantId }),
+  createGroup: (name, memberIds) =>
+    client.post('/api/conversations/group', { name, memberIds }),
+  getDetail: (conversationId) =>
+    client.get(`/api/conversations/${conversationId}`),
   getMessages: (conversationId, page = 1, limit = 30) =>
     client.get(`/api/conversations/${conversationId}/messages?page=${page}&limit=${limit}`),
+  updateGroupInfo: (conversationId, name) =>
+    client.patch(`/api/conversations/${conversationId}/info`, { name }),
+  addMember: (conversationId, userId) =>
+    client.post(`/api/conversations/${conversationId}/members`, { userId }),
+  removeMember: (conversationId, userId) =>
+    client.delete(`/api/conversations/${conversationId}/members/${userId}`),
 };
 
 // ─── MESSAGES ────────────────────────────────────────────────────────────────
