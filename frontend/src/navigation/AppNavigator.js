@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 
 // Screens cho mobile
 import AuthScreen from '../screens/AuthScreen';
-import ConversationListScreen from '../screens/ConversationListScreen';
+import MainTabsScreen from '../screens/MainTabsScreen';
 import ChatScreen from '../screens/ChatScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
 import GroupInfoScreen from '../screens/GroupInfoScreen';
@@ -30,7 +30,7 @@ export default function AppNavigator() {
     );
   }
 
-  // Tren web: dung layout 2 cot (sidebar + chat), khong dung Stack Navigator
+  // Tren web: dung layout 3 cot (rail + sidebar + chat), khong dung Stack Navigator
   if (Platform.OS === 'web') {
     if (!me) return <AuthScreen />;
     return (
@@ -40,7 +40,7 @@ export default function AppNavigator() {
     );
   }
 
-  // Tren mobile: dung Stack Navigator binh thuong
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <NavigationContainer>
@@ -54,10 +54,18 @@ export default function AppNavigator() {
         >
           {me ? (
             <>
-              <Stack.Screen name="ConversationList" component={ConversationListScreen} options={{ title: 'MessageHub' }} />
+              <Stack.Screen
+                name="Main"
+                component={MainTabsScreen}
+                options={{ headerShown: false }}
+              />
               <Stack.Screen name="Chat" component={ChatScreen} />
               <Stack.Screen name="CreateGroup" component={CreateGroupScreen} options={{ title: 'Tạo nhóm mới' }} />
-              <Stack.Screen name="GroupInfo" component={GroupInfoScreen} options={({ route }) => ({ title: route.params?.title || 'Thông tin nhóm' })} />
+              <Stack.Screen
+                name="GroupInfo"
+                component={GroupInfoScreen}
+                options={({ route }) => ({ title: route.params?.title || 'Thông tin nhóm' })}
+              />
             </>
           ) : (
             <Stack.Screen name="Auth" component={AuthScreen} options={{ headerShown: false }} />

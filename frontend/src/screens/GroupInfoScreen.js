@@ -1,6 +1,7 @@
+// frontend/src/screens/GroupInfoScreen.js
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, FlatList,
+  View, Text, TextInput, TouchableOpacity,
   StyleSheet, ActivityIndicator, Alert, ScrollView,
 } from 'react-native';
 import { conversationApi, userApi } from '../api';
@@ -11,13 +12,13 @@ import SearchBar from '../components/SearchBar';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 
 export default function GroupInfoScreen({ route, navigation }) {
-  const { conversationId } = route.params;
+  const { conversationId, title: initialTitle } = route.params;
   const { me } = useAuth();
 
   const [conv, setConv] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editingName, setEditingName] = useState(false);
-  const [newName, setNewName] = useState('');
+  const [newName, setNewName] = useState(initialTitle || '');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -29,13 +30,23 @@ export default function GroupInfoScreen({ route, navigation }) {
     loadDetail();
   }, []);
 
+  // FIX: BE khong co GET /:id de lay full conversation.
+  // Dung /:id/members (tra ve { members, adminId, isPublic }),
+  // roi lay `name` tu navigation params (da co san khi mo tu ChatScreen)
   const loadDetail = async () => {
     try {
-      const { data } = await conversationApi.getDetail(conversationId);
-      setConv(data);
-      setNewName(data.name);
+      const { data } = await conversationApi.getGroupMembers(conversationId);
+      setConv({
+        _id: conversationId,
+        name: initialTitle || '',
+        participants: data.members || [],
+        adminId: data.adminId,
+        isPublic: data.isPublic,
+        type: 'group',
+      });
+      setNewName(initialTitle || '');
     } catch (err) {
-      Alert.alert('Lỗi', err.message);
+      Alert.alert('Lỗi', err.response?.data?.message || err.message);
     } finally {
       setLoading(false);
     }
@@ -44,9 +55,16 @@ export default function GroupInfoScreen({ route, navigation }) {
   const saveGroupName = async () => {
     if (!newName.trim()) return;
     try {
-      await conversationApi.updateGroupInfo(conversationId, newName.trim());
-      setConv((prev) => ({ ...prev, name: newName.trim() }));
-      navigation.setOptions({ title: newName.trim() });
+      // FIX: updateGroupInfo nhan { name?, avatar?, isPublic? } thay vi (name)
+      const { data } = await conversationApi.updateGroupInfo(conversationId, {
+        name: newName.trim(),
+      });
+      // BE tra ve conversation populated -> merge ten moi vao state
+      setConv((prev) => ({
+        ...prev,
+        name: data?.name || newName.trim(),
+      }));
+      navigation.setOptions({ title: data?.name || newName.trim() });
       setEditingName(false);
     } catch (err) {
       Alert.alert('Lỗi', err.response?.data?.message || err.message);
@@ -59,8 +77,7 @@ export default function GroupInfoScreen({ route, navigation }) {
     setSearching(true);
     try {
       const { data } = await userApi.search(q.trim());
-      // Loc ra nhung nguoi chua o trong nhom
-      const memberIds = conv.participants.map((p) => p._id);
+      const memberIds = (conv?.participants || []).map((p) => p._id);
       setSearchResults(data.filter((u) => !memberIds.includes(u._id)));
     } catch (_) {}
     setSearching(false);
@@ -68,8 +85,14 @@ export default function GroupInfoScreen({ route, navigation }) {
 
   const addMember = async (user) => {
     try {
+      // BE tra ve conversation da populate -> co san participants moi
       const { data } = await conversationApi.addMember(conversationId, user._id);
-      setConv(data);
+      setConv((prev) => ({
+        ...prev,
+        participants: data.participants || prev.participants,
+        adminId: data.adminId || prev.adminId,
+        name: data.name || prev.name,
+      }));
       setSearchQuery('');
       setSearchResults([]);
       setShowSearch(false);
@@ -95,6 +118,7 @@ export default function GroupInfoScreen({ route, navigation }) {
                 navigation.popToTop();
               } else {
                 await conversationApi.kickMember(conversationId, user._id);
+                // reload de lay danh sach thanh vien moi
                 loadDetail();
               }
             } catch (err) {

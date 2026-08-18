@@ -39,7 +39,7 @@ export default function AuthScreen() {
       <ScrollView contentContainerStyle={s.container} keyboardShouldPersistTaps="handled">
         <View style={s.logoArea}>
           <View style={s.logoCircle}>
-            <Text style={s.logoIcon}>💬</Text>
+            <Text style={s.logoIcon}>🗪</Text>
           </View>
           <Text style={s.appName}>MessageHub</Text>
           <Text style={s.appSub}>Nhắn tin người - người & người - máy</Text>
