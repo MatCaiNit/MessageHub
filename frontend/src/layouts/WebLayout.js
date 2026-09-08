@@ -471,11 +471,11 @@ function DevicesSidebar({ activeConvId, onSelectDevice }) {
 
                 <View style={ds.devActions}>
                   <TouchableOpacity style={ds.actBtn} onPress={() => handleRegenerate(d)} title="Tạo lại key">
-                    <Text style={ds.actIcon}>🔄</Text>
+                    <Text style={ds.actIcon}>Tạo lại</Text>
                   </TouchableOpacity>
                   {d.isActive && (
                     <TouchableOpacity style={ds.actBtn} onPress={() => handleRevoke(d)} title="Thu hồi">
-                      <Text style={ds.actIcon}>🚫</Text>
+                      <Text style={ds.actIcon}>Xóa</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -791,7 +791,7 @@ function ShowKeyInline({ title, apiKey, onClose }) {
       </View>
       <View style={{ flexDirection: 'row', gap: 6, marginTop: 8 }}>
         <TouchableOpacity style={[cg.createBtn, { flex: 1, backgroundColor: C.panel2, borderWidth: 1, borderColor: C.border }]} onPress={copy}>
-          <Text style={[cg.createText, { color: C.text }]}>📋 Sao chép</Text>
+          <Text style={[cg.createText, { color: C.text }]}> Sao chép</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[cg.createBtn, { flex: 1 }]} onPress={onClose}>
           <Text style={cg.createText}>Đóng</Text>

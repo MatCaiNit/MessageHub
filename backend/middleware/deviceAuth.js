@@ -10,7 +10,7 @@ export const deviceProtect = async (req, res, next) => {
 
   try {
     const keyHash = hashApiKey(apiKey);
-    const device = await Device.findOne({ apiKey: keyHash });
+    const device = await Device.findOne({ apiKeyHash: keyHash });
 
     if (!device) {
       return res.status(401).json({ message: 'API key khong hop le', code: 'API_KEY_INVALID' });
