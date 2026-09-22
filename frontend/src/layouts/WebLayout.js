@@ -386,9 +386,9 @@ function DevicesSidebar({ activeConvId, onSelectDevice }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleCreate = async (name) => {
+  const handleCreate = async (name, hubConversationId) => {
     try {
-      const { data } = await deviceApi.register(name);
+      const { data } = await deviceApi.register(name, hubConversationId);
       setShownKey({ title: `Thiết bị "${data.device.name}" đã tạo`, apiKey: data.apiKey });
       setShowAdd(false);
       load();
@@ -744,10 +744,27 @@ function AddDeviceInline({ onClose, onCreate }) {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // ─ Moi: cho phep chon giua "Tao moi" hoac "Ghep vao hub co san" ─
+  const [mode, setMode] = useState('new'); // 'new' | 'join'
+  const [hubs, setHubs] = useState([]);
+  const [loadingHubs, setLoadingHubs] = useState(true);
+  const [selectedHubId, setSelectedHubId] = useState(null);
+
+  useEffect(() => {
+    deviceApi.listHubs()
+      .then(({ data }) => setHubs(data))
+      .catch(() => setHubs([]))
+      .finally(() => setLoadingHubs(false));
+  }, []);
+
   const submit = async () => {
     if (name.trim().length < 2) { window.alert('Tên phải từ 2 ký tự'); return; }
+    if (mode === 'join' && !selectedHubId) {
+      window.alert('Vui lòng chọn 1 cuộc trò chuyện để ghép vào');
+      return;
+    }
     setLoading(true);
-    await onCreate(name.trim());
+    await onCreate(name.trim(), mode === 'join' ? selectedHubId : undefined);
     setLoading(false);
     setName('');
   };
@@ -758,9 +775,60 @@ function AddDeviceInline({ onClose, onCreate }) {
         <Text style={cg.title}>Thêm thiết bị mới</Text>
         <TouchableOpacity onPress={onClose}><Text style={cg.close}>✕</Text></TouchableOpacity>
       </View>
+
+      {/* Toggle: Tao moi / Ghep vao hub co san */}
+      <View style={adm.modeRow}>
+        <TouchableOpacity
+          style={[adm.modeBtn, mode === 'new' && adm.modeBtnActive]}
+          onPress={() => setMode('new')}
+        >
+          <Text style={[adm.modeBtnText, mode === 'new' && adm.modeBtnTextActive]}>
+            + Tạo cuộc trò chuyện mới
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[adm.modeBtn, mode === 'join' && adm.modeBtnActive]}
+          onPress={() => setMode('join')}
+          disabled={hubs.length === 0}
+        >
+          <Text style={[adm.modeBtnText, mode === 'join' && adm.modeBtnTextActive,
+                        hubs.length === 0 && adm.modeBtnTextDisabled]}>
+            🔗 Ghép vào cuộc trò chuyện có sẵn
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       <TextInput style={cg.nameInput} placeholder="VD: ESP32 phòng khách"
         placeholderTextColor={C.dim} value={name} onChangeText={setName} autoFocus />
-      <Text style={cg.hint}>Sau khi tạo, bạn sẽ nhận API key — chỉ hiện MỘT lần, hãy sao lưu ngay.</Text>
+
+      {mode === 'join' && (
+        <View style={adm.hubList}>
+          {loadingHubs ? (
+            <ActivityIndicator color={C.accent} style={{ padding: 10 }} />
+          ) : hubs.length === 0 ? (
+            <Text style={adm.hubEmpty}>Chưa có cuộc trò chuyện thiết bị nào để ghép vào.</Text>
+          ) : (
+            hubs.map((hub) => (
+              <TouchableOpacity
+                key={hub._id}
+                style={[adm.hubItem, selectedHubId === hub._id && adm.hubItemActive]}
+                onPress={() => setSelectedHubId(hub._id)}
+              >
+                <Text style={adm.hubIcon}>{selectedHubId === hub._id ? '●' : '○'}</Text>
+                <Text style={adm.hubName} numberOfLines={1}>{hub.name}</Text>
+                <Text style={adm.hubCount}>{hub.deviceCount} thiết bị</Text>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      )}
+
+      <Text style={cg.hint}>
+        {mode === 'new'
+          ? 'Sau khi tạo, bạn sẽ nhận API key — chỉ hiện MỘT lần, hãy sao lưu ngay.'
+          : 'Thiết bị mới sẽ gửi tin vào chung cuộc trò chuyện đã chọn, hiện tên riêng cho từng thiết bị.'}
+      </Text>
+
       <TouchableOpacity style={[cg.createBtn, !name.trim() && cg.disabled]}
         onPress={submit} disabled={!name.trim() || loading}>
         {loading ? <ActivityIndicator color={C.white} /> : <Text style={cg.createText}>Tạo</Text>}
@@ -768,6 +836,34 @@ function AddDeviceInline({ onClose, onCreate }) {
     </View>
   );
 }
+
+const adm = StyleSheet.create({
+  modeRow: { flexDirection: 'row', gap: 6, marginBottom: 10 },
+  modeBtn: {
+    flex: 1, paddingVertical: 8, paddingHorizontal: 8,
+    borderRadius: RADIUS.sm, borderWidth: 1, borderColor: C.border,
+    backgroundColor: C.panel, alignItems: 'center', cursor: 'pointer',
+  },
+  modeBtnActive: { backgroundColor: C.accentDim, borderColor: C.accent },
+  modeBtnText: { fontSize: FONT.xs, color: C.dim, fontWeight: '600', textAlign: 'center' },
+  modeBtnTextActive: { color: C.accentText },
+  modeBtnTextDisabled: { opacity: 0.4 },
+
+  hubList: {
+    backgroundColor: C.panel, borderRadius: RADIUS.sm,
+    borderWidth: 1, borderColor: C.border, marginBottom: 8, maxHeight: 160,
+  },
+  hubEmpty: { fontSize: FONT.xs, color: C.dim, padding: 12, textAlign: 'center' },
+  hubItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: C.borderLight, cursor: 'pointer',
+  },
+  hubItemActive: { backgroundColor: C.accentDim },
+  hubIcon: { fontSize: FONT.sm, color: C.accent },
+  hubName: { flex: 1, fontSize: FONT.sm, color: C.text, fontWeight: '500' },
+  hubCount: { fontSize: FONT.xs, color: C.dim },
+});
 
 // ─── Inline: Hiện API key ───────────────────────────────────────────────────
 function ShowKeyInline({ title, apiKey, onClose }) {

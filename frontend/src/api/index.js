@@ -71,9 +71,17 @@ export const messageApi = {
 };
 
 // ─── DEVICES ─────────────────────────────────────────────────────────────────
-// Chua ai goi tren FE nhung expose san de con lam man quan ly thiet bi
 export const deviceApi = {
-  register: (name) => client.post('/api/devices', { name }),
+  // conversationId (optional): neu truyen vao, thiet bi moi se duoc GHEP vao
+  // 1 cuoc tro chuyen "device" da co san thay vi tao rieng 1 cuoc tro chuyen moi
+  // -> nhieu thiet bi vat ly cung xuat hien chung trong 1 khung chat
+  register: (name, conversationId) =>
+    client.post('/api/devices', conversationId ? { name, conversationId } : { name }),
+
+  // Danh sach cac "hub" (cuoc tro chuyen loai device) da co san cua user,
+  // dung khi muon ghep them thiet bi moi vao 1 hub thay vi tao moi
+  listHubs: () => client.get('/api/devices/hubs'),
+
   listMine: () => client.get('/api/devices'),
   revoke: (deviceId) => client.patch(`/api/devices/${deviceId}/revoke`),
   regenerateKey: (deviceId) => client.patch(`/api/devices/${deviceId}/regenerate-key`),

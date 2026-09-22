@@ -4,10 +4,8 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
+const char* SERVER_URL = "http://192.168.1.3:3000/api/messages/device";
 
-const char* SERVER_URL = "http://192.168.1.4:3000/api/messages/device";
-
-//  CHÂN GPIO
 #define PIN_PIR      21
 #define PIN_BOOT_BTN 0
 
@@ -15,10 +13,9 @@ const unsigned long PIR_LOW_STABLE   = 5000;
 const unsigned long PIR_MIN_INTERVAL = 10000;
 #define DEBUG_PIR_STATE  true
 
-
 Preferences prefs;
 String apiKey = "";
-String deviceLabel = "";  // ten hien thi rieng cua board nay, VD "MessageHub-A4CF12"
+String deviceLabel = "";
 
 int  lastPirState        = LOW;
 unsigned long lastPirLowTime  = 0;
@@ -28,50 +25,52 @@ bool armed = false;
 
 WiFiManager wm;
 
-
 String getUniqueDeviceLabel() {
-  uint64_t chipId = ESP.getEfuseMac(); // MAC address duy nhat cua tung chip
+  uint64_t chipId = ESP.getEfuseMac();
   char buf[32];
-  // Lay 6 hex cuoi cua chip id lam ma nhan dien ngan gon, de doc
-  snprintf(buf, sizeof(buf), "MessageHub-%04X",
-           (uint16_t)(chipId >> 32));
+  snprintf(buf, sizeof(buf), "MessageHub-%04X", (uint16_t)(chipId >> 32));
   return String(buf);
 }
 
-
-// WIFI PROVISIONING
 void setupWiFiAndApiKey() {
   deviceLabel = getUniqueDeviceLabel();
-  Serial.printf("[SETUP] Ten thiet bi (hotspot khi config): %s\n", deviceLabel.c_str());
+  Serial.printf("[SETUP] Ten thiet bi: %s\n", deviceLabel.c_str());
 
-  // Namespace flash rieng theo tung chip -> nhieu board khong ghi de len nhau
-  // du dung chung 1 file code (moi board co Chip ID rieng)
   prefs.begin("msghub", false);
-  apiKey = prefs.getString("apikey", "");
 
-  WiFiManagerParameter customApiKey(
-      "apikey", "API Key (lay tu tab Thiet bi tren web MessageHub)",
-      apiKey.c_str(), 64);
-  wm.addParameter(&customApiKey);
-
+  // ─── FIX: kiem tra nut BOOT va XOA config TRUOC khi doc apiKey cu ───
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
-  if (digitalRead(PIN_BOOT_BTN) == LOW) {
-    Serial.println("[SETUP] Nut BOOT dang giu - xoa config cu");
+  bool forceReset = (digitalRead(PIN_BOOT_BTN) == LOW);
+
+  if (forceReset) {
+    Serial.println("[SETUP] Nut BOOT dang giu - XOA config cu TRUOC khi hien form");
     wm.resetSettings();
     prefs.remove("apikey");
+    prefs.end();
+    prefs.begin("msghub", false); // mo lai sau khi xoa, dam bao doc ra rong
   }
+
+  // Bay gio moi doc apiKey - neu vua reset thi chac chan la rong
+  apiKey = prefs.getString("apikey", "");
+  Serial.printf("[SETUP] API key doc tu flash (truoc khi vao form): [%s] (%d ky tu)\n",
+                apiKey.c_str(), apiKey.length());
+
+  // Form se hien apiKey nay lam gia tri mac dinh trong o nhap
+  // Neu vua reset -> apiKey rong -> o nhap se TRONG, khong con nham lan
+  WiFiManagerParameter customApiKey(
+      "apikey", "API Key (lay tu tab Thiet bi tren web MessageHub)",
+      apiKey.c_str(), 100);
+  wm.addParameter(&customApiKey);
 
   wm.setConfigPortalTimeout(180);
 
-  Serial.printf("[SETUP] Dang ket noi WiFi (hoac mo hotspot \"%s\" de config)...\n",
+  Serial.printf("[SETUP] Dang ket noi WiFi (hoac mo hotspot \"%s\")...\n",
                 deviceLabel.c_str());
 
-  // Ten hotspot = deviceLabel rieng cua tung board -> nhieu board
-  // bat cung luc se co ten khac nhau tren danh sach WiFi cua dien thoai
   bool ok = wm.autoConnect(deviceLabel.c_str());
 
   if (!ok) {
-    Serial.println("[SETUP] Khong ket noi duoc va het thoi gian cho config.");
+    Serial.println("[SETUP] Khong ket noi duoc, khoi dong lai sau 5s...");
     delay(5000);
     ESP.restart();
   }
@@ -79,30 +78,42 @@ void setupWiFiAndApiKey() {
   Serial.println("[SETUP] WiFi da ket noi!");
   Serial.printf("[SETUP] IP: %s\n", WiFi.localIP().toString().c_str());
 
+  // Doc gia tri THAT SU nguoi dung vua nhap/dan tren form
   String enteredKey = String(customApiKey.getValue());
-  enteredKey.trim();
+  enteredKey.trim(); // xoa khoang trang dau/cuoi neu co
+
+  Serial.println("=================================");
+  Serial.printf("[DEBUG] Gia tri nhap tren form: [%s]\n", enteredKey.c_str());
+  Serial.printf("[DEBUG] Do dai: %d ky tu\n", enteredKey.length());
+  Serial.println("=================================");
+
   if (enteredKey.length() > 0) {
     apiKey = enteredKey;
     prefs.putString("apikey", apiKey);
-    Serial.println("[SETUP] Da luu API key vao flash");
+    Serial.println("[SETUP] Da luu API key MOI vao flash");
+  } else {
+    Serial.println("[SETUP] ⚠ Form apiKey de trong - giu nguyen key cu (neu co)");
   }
+
+  Serial.println("=================================");
+  Serial.printf("[DEBUG] API key SE DUNG de gui tin: [%s]\n", apiKey.c_str());
+  Serial.printf("[DEBUG] Do dai: %d ky tu\n", apiKey.length());
+  Serial.println("=================================");
 
   if (apiKey.length() == 0) {
     Serial.println("[SETUP] ⚠ CHUA CO API KEY! Giu nut BOOT 3s de vao lai config.");
   }
 }
 
-
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println();
   Serial.println("╔═════════════════════════════════════════════════╗");
-  Serial.println("║  MessageHub ESP32 - Multi-device Provisioning  ║");
+  Serial.println("║  MessageHub ESP32 - Fix API key form caching   ║");
   Serial.println("╚═════════════════════════════════════════════════╝");
 
-  pinMode(PIN_PIR, INPUT);
+  pinMode(PIN_PIR, INPUT_PULLDOWN);
 
   setupWiFiAndApiKey();
 
@@ -126,8 +137,7 @@ void setup() {
     Serial.println("[BOOT] Gui tin chao server...");
     char hello[128];
     snprintf(hello, sizeof(hello),
-             "V %s da online — PIR san sang phat hien chuyen dong",
-             deviceLabel.c_str());
+             "🟢 %s da online — PIR san sang", deviceLabel.c_str());
     if (sendMessage(hello, "device_event", "{\"event\":\"boot\"}")) {
       Serial.println("[BOOT] OK - firmware san sang!");
     } else {
@@ -137,8 +147,6 @@ void setup() {
     Serial.println("[BOOT] Bo qua - chua co API key.");
   }
 }
-
-
 
 void loop() {
   unsigned long now = millis();
@@ -189,16 +197,14 @@ void loop() {
       && armed && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
     lastTriggerTime = now;
     armed = false;
-    Serial.println("[PIR]  Phat hien chuyen dong!");
-    sendMessage(" Phat hien chuyen dong", "device_event",
-                "{\"sensor\":\"PIR\",\"location\":\"phong_khach\"}");
+    Serial.println("[PIR] 🚨 Phat hien chuyen dong!");
+    sendMessage("🚨 Phat hien chuyen dong", "device_event",
+                "{\"sensor\":\"PIR\"}");
   }
 
   lastPirState = currentState;
   delay(50);
 }
-
-
 
 bool sendMessage(const char* content, const char* type,
                  const char* deviceDataJson) {

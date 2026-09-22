@@ -2,6 +2,7 @@ import express from 'express';
 import {
   registerDevice,
   listMyDevices,
+  listDeviceHubs,
   revokeDevice,
   regenerateApiKey,
   addMember,
@@ -14,6 +15,9 @@ import { registerDeviceRules, addMemberRules, deviceIdParamRule } from '../valid
 const router = express.Router();
 
 router.use(protect);
+
+// QUAN TRONG: /hubs phai dat TRUOC /:id de tranh Express hieu nham "hubs" la 1 deviceId
+router.get('/hubs', listDeviceHubs);
 
 router.post('/', registerDeviceRules, validate, registerDevice);
 router.get('/', listMyDevices);

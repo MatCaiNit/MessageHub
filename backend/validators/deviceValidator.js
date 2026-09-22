@@ -5,6 +5,12 @@ export const registerDeviceRules = [
     .trim()
     .isLength({ min: 2, max: 50 })
     .withMessage('Ten thiet bi phai tu 2 den 50 ky tu'),
+
+  // Optional: chi validate neu client co gui conversationId (che do join hub co san)
+  body('conversationId')
+    .optional()
+    .isMongoId()
+    .withMessage('conversationId khong hop le'),
 ];
 
 export const addMemberRules = [
