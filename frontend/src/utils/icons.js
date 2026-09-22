@@ -35,6 +35,23 @@ const ICONS = {
 
   // Load more
   'arrow-up-circle-outline': '↑',
+
+  // Reply / mention / file / group info (icon, reply, @mention, gửi file, panel nhóm)
+  'arrow-undo-outline':   '↩',
+  'document-text-outline': '📄',
+  'download-outline':     '⬇',
+  'attach-outline':       '📎',
+  'image-outline':        '🖼',
+  'happy-outline':        '😊',
+  'people-outline':       '👥',
+  'exit-outline':         '🚪',
+  'link-outline':         '🔗',
+  'folder-outline':       '🗂',
+  'information-circle-outline': 'ℹ',
+  'trash-outline':        '🗑',
+  'copy-outline':         '⧉',
+  'checkmark-circle':     '✓',
+  'ellipsis-horizontal':  '⋯',
 };
 
 export function Icon({ name, size = 16, color, style }) {

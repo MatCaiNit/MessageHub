@@ -15,7 +15,8 @@ export const registerDeviceRules = [
 
 export const addMemberRules = [
   param('id').isMongoId().withMessage('deviceId khong hop le'),
-  body('userId').isMongoId().withMessage('userId khong hop le'),
+  body('userId').optional().isMongoId().withMessage('userId khong hop le'),
+  body('deviceId').optional().isMongoId().withMessage('deviceId khong hop le'),
 ];
 
 export const deviceIdParamRule = [param('id').isMongoId().withMessage('deviceId khong hop le')];

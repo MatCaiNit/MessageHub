@@ -3,6 +3,22 @@ import Conversation from '../models/Conversation.js';
 import { broadcastToConversation } from '../sockets/socketHandler.js';
 import { SOCKET_EVENTS } from '../sockets/socketEvents.js';
 
+// POST /api/messages/upload
+export const uploadAttachment = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Khong co file duoc gui len' });
+    const url = `/uploads/${req.file.filename}`;
+    res.status(201).json({
+      url,
+      fileName: req.file.originalname,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+
 // POST /api/messages/device 
 export const sendDeviceMessage = async (req, res) => {
   try {
@@ -20,7 +36,7 @@ export const sendDeviceMessage = async (req, res) => {
 
     await Conversation.findByIdAndUpdate(conversationId, { lastMessage: message._id });
 
-    const populatedMessage = await message.populate('senderId', 'username avatar type');
+    const populatedMessage = await message.populate('senderId', 'username displayName avatar type');
 
     await broadcastToConversation(conversationId, SOCKET_EVENTS.RECEIVE_MESSAGE, populatedMessage);
 

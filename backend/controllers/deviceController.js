@@ -4,24 +4,15 @@ import Conversation from '../models/Conversation.js';
 import { generateApiKey } from '../utils/generateApiKey.js';
 
 
-// POST /api/devices
-// Body: { name, conversationId? }
-//   - Neu KHONG co conversationId: tao thiet bi + tao conversation MOI (hanh vi cu, khong doi)
-//   - Neu CO conversationId: join thiet bi moi vao 1 conversation device DA TON TAI
-//     -> nhieu thiet bi vat ly se cung xuat hien chung trong 1 cuoc tro chuyen,
-//        moi thiet bi van co "user ao" rieng (linkedUserAccountId) nen tin nhan
-//        cua tung thiet bi van hien dung ten + avatar rieng tren khung chat
-//        (MessageBubble da ho tro san viec nay, khong can sua frontend)
 export const registerDevice = async (req, res) => {
   try {
     const { name, conversationId } = req.body;
     const ownerId = req.userId;
 
-    // Tao user ao dai dien cho thiet bi nay (luon tao moi, du dung chung
-    // hay rieng conversation) -> moi thiet bi co danh tinh rieng khi hien tin nhan
     const deviceUsername = `device_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const deviceUser = await User.create({
       username: deviceUsername,
+      displayName: name,
       email: `${deviceUsername}@device.com`,
       passwordHash: 'device-account-no-login',
       type: 'device',
@@ -30,29 +21,23 @@ export const registerDevice = async (req, res) => {
     const { rawKey, keyHash } = generateApiKey();
 
     let conversation;
-
     if (conversationId) {
-      // ─── Che do JOIN: gan thiet bi moi vao 1 "hub" da co san ───
+      // Ghep thiet bi moi vao 1 hoi thoai "device" da co san (nhieu thiet bi chung 1 chat)
       conversation = await Conversation.findById(conversationId);
-
       if (!conversation) {
         return res.status(404).json({ message: 'Khong tim thay cuoc tro chuyen de tham gia' });
       }
       if (conversation.type !== 'device') {
-        return res.status(400).json({ message: 'Chi co the ghep thiet bi vao mot cuoc tro chuyen loai thiet bi' });
+        return res.status(400).json({ message: 'Chi co the ghep thiet bi vao 1 hoi thoai loai device' });
       }
-      // Chi chu so huu cuoc tro chuyen thiet bi (adminId) moi duoc them thiet bi moi vao
       if (String(conversation.adminId) !== String(ownerId)) {
-        return res.status(403).json({ message: 'Ban khong co quyen them thiet bi vao cuoc tro chuyen nay' });
+        return res.status(403).json({ message: 'Ban khong phai admin cua hoi thoai nay' });
       }
-
-      // Them user ao cua thiet bi moi vao danh sach participants (neu chua co)
       if (!conversation.participants.map(String).includes(String(deviceUser._id))) {
         conversation.participants.push(deviceUser._id);
         await conversation.save();
       }
     } else {
-      // ─── Che do cu: tao conversation MOI rieng cho thiet bi nay ───
       conversation = await Conversation.create({
         participants: [ownerId, deviceUser._id],
         type: 'device',
@@ -69,8 +54,7 @@ export const registerDevice = async (req, res) => {
       conversationId: conversation._id,
     });
 
-    // Chi gan conversation.deviceId khi tao moi (1 conversation nhieu thiet bi
-    // thi khong the chi tro ve 1 deviceId duy nhat nua)
+    // Chi gan deviceId "dai dien" cho hoi thoai khi day la hoi thoai moi tao rieng cho 1 thiet bi
     if (!conversationId) {
       conversation.deviceId = device._id;
       await conversation.save();
@@ -87,29 +71,19 @@ export const registerDevice = async (req, res) => {
   }
 };
 
-// GET /api/devices/hubs
-// Tra ve danh sach cac cuoc tro chuyen loai "device" hien co cua user
-// (dung khi FE muon cho nguoi dung chon "them vao hub co san" thay vi tao moi)
+// GET /api/devices/hubs - danh sach cac hoi thoai loai "device" ma user nay la admin,
+// dung de chon "ghep thiet bi moi vao hoi thoai co san" thay vi luon tao hoi thoai moi
 export const listDeviceHubs = async (req, res) => {
   try {
-    const hubs = await Conversation.find({
-      type: 'device',
-      adminId: req.userId,
-    }).select('_id name participants createdAt');
-
-    // Dem so thiet bi thuc su dang gan vao moi hub (participants tru chinh chu)
+    const hubs = await Conversation.find({ type: 'device', adminId: req.userId }).select(
+      '_id name participants createdAt'
+    );
     const hubsWithCount = await Promise.all(
       hubs.map(async (hub) => {
         const deviceCount = await Device.countDocuments({ conversationId: hub._id });
-        return {
-          _id: hub._id,
-          name: hub.name,
-          deviceCount,
-          createdAt: hub.createdAt,
-        };
+        return { _id: hub._id, name: hub.name, deviceCount, createdAt: hub.createdAt };
       })
     );
-
     res.json(hubsWithCount);
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
@@ -119,8 +93,8 @@ export const listDeviceHubs = async (req, res) => {
 export const listMyDevices = async (req, res) => {
   try {
     const devices = await Device.find({ ownerId: req.userId }).populate(
-        'conversationId',
-        'name participants'
+      'conversationId',
+      'name participants'
     );
     res.json(devices);
   } catch (err) {
@@ -131,12 +105,7 @@ export const listMyDevices = async (req, res) => {
 
 export const revokeDevice = async (req, res) => {
   try {
-    const { deviceId } = req.params;
-    if (!deviceId) {
-      return res.status(400).json({ message: 'Thieu deviceId' });
-    }
-
-    // FIX: thieu dong lay device truoc khi dung - gay ReferenceError
+    const { id: deviceId } = req.params;
     const device = await Device.findById(deviceId);
     if (!device) {
       return res.status(404).json({ message: 'Khong tim thay thiet bi' });
@@ -175,7 +144,10 @@ export const regenerateApiKey = async (req, res) => {
 
 export const addMember = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, deviceId: addDeviceId } = req.body;
+    if (!userId && !addDeviceId) {
+      return res.status(400).json({ message: 'Can truyen userId hoac deviceId de them vao hoi thoai' });
+    }
 
     const device = await Device.findById(req.params.id);
     if (!device) return res.status(404).json({ message: 'Khong tim thay thiet bi' });
@@ -183,20 +155,34 @@ export const addMember = async (req, res) => {
       return res.status(403).json({ message: 'Khong co quyen them thanh vien vao thiet bi nay' });
     }
 
-    const userToAdd = await User.findById(userId);
-    if (!userToAdd) return res.status(404).json({ message: 'Khong tim thay user de them vao' });
-
     const conversation = await Conversation.findById(device.conversationId);
+    if (!conversation) return res.status(404).json({ message: 'Khong tim thay cuoc tro chuyen cua thiet bi' });
 
-    // FIX: kiem tra dung `userId` (nguoi moi them), khong phai `req.userId` (chu so huu)
-    if (conversation.participants.map(String).includes(userId)) {
-      return res.status(400).json({ message: 'User da la thanh vien cua cuoc tro chuyen' });
+    let targetUserId;
+
+    if (addDeviceId) {
+      // Them 1 thiet bi khac (cua chinh nguoi goi) vao chung hoi thoai nay
+      const otherDevice = await Device.findById(addDeviceId);
+      if (!otherDevice) return res.status(404).json({ message: 'Khong tim thay thiet bi de them vao' });
+      if (String(otherDevice.ownerId) !== req.userId) {
+        return res.status(403).json({ message: 'Ban khong phai admin cua thiet bi nay nen khong the keo vao nhom' });
+      }
+      targetUserId = otherDevice.linkedUserAccountId;
+    } else {
+      const userToAdd = await User.findById(userId);
+      if (!userToAdd) return res.status(404).json({ message: 'Khong tim thay user de them vao' });
+      targetUserId = userToAdd._id;
     }
 
-    conversation.participants.push(userId);
+    if (conversation.participants.map(String).includes(String(targetUserId))) {
+      return res.status(400).json({ message: 'Da la thanh vien cua cuoc tro chuyen nay roi' });
+    }
+
+    conversation.participants.push(targetUserId);
     await conversation.save();
 
-    res.json({ message: 'Da them thanh vien vao cuoc tro chuyen cua thiet bi', conversation });
+    const populated = await conversation.populate('participants', 'username displayName avatar isOnline type');
+    res.json({ message: 'Da them thanh vien vao cuoc tro chuyen cua thiet bi', conversation: populated });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
@@ -205,21 +191,21 @@ export const addMember = async (req, res) => {
 
 export const removeMember = async (req, res) => {
   try {
-    const { id, userId } = req.body;
+    const { id, userId } = req.params;
 
     const device = await Device.findById(id);
     if (!device) return res.status(404).json({ message: 'Khong tim thay thiet bi' });
     if (String(device.ownerId) !== req.userId) {
       return res.status(403).json({ message: 'Khong co quyen xoa thanh vien khoi thiet bi nay' });
     }
-    if (String(device.ownerId) === userId) {
-      return res.status(400).json({ message: 'Khong the tu xoa chinh chu so huu' });
+    if (String(device.linkedUserAccountId) === userId) {
+      return res.status(400).json({ message: 'Khong the xoa chinh tai khoan cua thiet bi nay' });
     }
 
     const conversation = await Conversation.findById(device.conversationId);
     if (!conversation) return res.status(404).json({ message: 'Khong tim thay cuoc tro chuyen cua thiet bi' });
 
-    conversation.participants = conversation.participants.filter((id) => String(id) !== String(userId));
+    conversation.participants = conversation.participants.filter((pid) => String(pid) !== String(userId));
     await conversation.save();
 
     res.json({ message: 'Da xoa thanh vien khoi cuoc tro chuyen cua thiet bi', conversation });

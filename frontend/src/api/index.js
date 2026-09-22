@@ -1,5 +1,6 @@
 // frontend/src/api/index.js
 import client from './client';
+import { API_URL } from './config';
 
 // ─── AUTH ───────────────────────────────────────────────────────────────────
 export const authApi = {
@@ -37,30 +38,26 @@ export const conversationApi = {
   getMessages: (conversationId, page = 1, limit = 30) =>
     client.get(`/api/conversations/${conversationId}/messages?page=${page}&limit=${limit}`),
 
-  // FIX: BE khong co GET /:id, dung /:id/members thay vi getDetail
-  // Tra ve { members, adminId, isPublic }
   getGroupMembers: (conversationId) =>
     client.get(`/api/conversations/${conversationId}/members`),
 
-  // FIX: URL cua BE la PATCH /:id (khong co /info),
-  // va nhan ca { name?, avatar?, isPublic? } trong body
   updateGroupInfo: (conversationId, updates) =>
     client.patch(`/api/conversations/${conversationId}`, updates),
 
   addMember: (conversationId, userId) =>
     client.post(`/api/conversations/${conversationId}/members`, { userId }),
 
-  // FIX: bo sung leaveGroup - GroupInfoScreen dang goi ma khong duoc export
   leaveGroup: (conversationId) =>
     client.post(`/api/conversations/${conversationId}/leave`),
 
-  // FIX: bo sung kickMember - GroupInfoScreen dang goi ma khong duoc export
   kickMember: (conversationId, userId) =>
     client.delete(`/api/conversations/${conversationId}/members/${userId}`),
 
-  // Bo sung joinGroup (BE co, FE chua expose)
   joinGroup: (conversationId) =>
     client.post(`/api/conversations/${conversationId}/join`),
+
+  getMedia: (conversationId) =>
+    client.get(`/api/conversations/${conversationId}/media`),
 };
 
 // ─── MESSAGES ────────────────────────────────────────────────────────────────
@@ -68,24 +65,37 @@ export const messageApi = {
   delete: (messageId) => client.delete(`/api/messages/${messageId}`),
   recall: (messageId) => client.patch(`/api/messages/${messageId}/recall`),
   markSeen: (messageId) => client.patch(`/api/messages/${messageId}/seen`),
+
+
+  upload: (file, onUploadProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post('/api/messages/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress,
+    });
+  },
+};
+
+export const resolveFileUrl = (url) => {
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
 };
 
 // ─── DEVICES ─────────────────────────────────────────────────────────────────
 export const deviceApi = {
-  // conversationId (optional): neu truyen vao, thiet bi moi se duoc GHEP vao
-  // 1 cuoc tro chuyen "device" da co san thay vi tao rieng 1 cuoc tro chuyen moi
-  // -> nhieu thiet bi vat ly cung xuat hien chung trong 1 khung chat
   register: (name, conversationId) =>
     client.post('/api/devices', conversationId ? { name, conversationId } : { name }),
 
-  // Danh sach cac "hub" (cuoc tro chuyen loai device) da co san cua user,
-  // dung khi muon ghep them thiet bi moi vao 1 hub thay vi tao moi
   listHubs: () => client.get('/api/devices/hubs'),
-
   listMine: () => client.get('/api/devices'),
   revoke: (deviceId) => client.patch(`/api/devices/${deviceId}/revoke`),
   regenerateKey: (deviceId) => client.patch(`/api/devices/${deviceId}/regenerate-key`),
   addMember: (deviceId, userId) => client.post(`/api/devices/${deviceId}/members`, { userId }),
+  
+  addDeviceMember: (deviceId, otherDeviceId) =>
+    client.post(`/api/devices/${deviceId}/members`, { deviceId: otherDeviceId }),
   removeMember: (deviceId, userId) => client.delete(`/api/devices/${deviceId}/members/${userId}`),
 };
 

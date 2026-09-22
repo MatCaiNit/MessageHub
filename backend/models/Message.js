@@ -15,6 +15,7 @@ const messageSchema = new mongoose.Schema(
       },
     ],
     replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Message', default: null },
+    mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     seenBy: [
       {
         userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

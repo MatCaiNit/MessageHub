@@ -24,7 +24,7 @@ export const syncData = async (req, res) => {
       conversationId: { $in: conversationIds },
       createdAt: { $gt: sinceDate },
     })
-      .populate('senderId', 'username avatar type')
+      .populate('senderId', 'username displayName avatar type')
       .sort({ createdAt: 1 });
 
     // Lay cac hoi thoai co cap nhat (tin nhan moi, thanh vien moi...) moi hon "since"
@@ -32,7 +32,7 @@ export const syncData = async (req, res) => {
       participants: req.userId,
       updatedAt: { $gt: sinceDate },
     })
-      .populate('participants', 'username avatar isOnline type')
+      .populate('participants', 'username displayName avatar isOnline type')
       .populate('lastMessage');
 
     res.json({

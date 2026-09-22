@@ -49,10 +49,20 @@ export function useMessages(conversationId) {
     }
   };
 
-  // Gui tin nhan qua socket
-  const sendMessage = useCallback((content) => {
-    if (!content.trim() || !socket) return;
-    socket.emit('send_message', { conversationId, content: content.trim() });
+  const sendMessage = useCallback((payload) => {
+    if (!socket) return;
+    const opts = typeof payload === 'string' ? { content: payload } : (payload || {});
+    const content = (opts.content || '').trim();
+    const hasAttachments = Array.isArray(opts.attachments) && opts.attachments.length > 0;
+    if (!content && !hasAttachments) return;
+    socket.emit('send_message', {
+      conversationId,
+      content,
+      replyTo: opts.replyTo || null,
+      mentions: opts.mentions || [],
+      attachments: opts.attachments || [],
+      type: opts.type,
+    });
   }, [socket, conversationId]);
 
   // Thu hoi tin nhan

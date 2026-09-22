@@ -85,7 +85,7 @@ export const initSocket = (io) => {
     // --- Su kien: gui tin nhan (tu nguoi dung, qua socket) ---
     socket.on(SOCKET_EVENTS.SEND_MESSAGE, async (data) => {
       try {
-        const { conversationId, content, replyTo } = data;
+        const { conversationId, content, replyTo, mentions, attachments, type } = data;
 
         const conversation = await Conversation.findById(conversationId);
         if (!conversation) {
@@ -95,18 +95,34 @@ export const initSocket = (io) => {
           return socket.emit(SOCKET_EVENTS.ERROR_MESSAGE, { message: 'Ban khong thuoc hoi thoai nay' });
         }
 
+        const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+        if (!content?.trim() && !hasAttachments) {
+          return socket.emit(SOCKET_EVENTS.ERROR_MESSAGE, { message: 'Tin nhan rong' });
+        }
+
         const message = await Message.create({
           conversationId,
           senderId: userId,
-          content,
-          type: 'text',
+          content: content || '',
+          type: type || (hasAttachments ? (attachments[0].fileType?.startsWith('image/') ? 'image' : 'file') : 'text'),
           replyTo: replyTo || null,
+          mentions: Array.isArray(mentions) ? mentions : [],
+          attachments: hasAttachments ? attachments : [],
         });
 
         conversation.lastMessage = message._id;
         await conversation.save();
 
-        const populatedMessage = await message.populate('senderId', 'username avatar type');
+        const populatedMessage = await message
+          .populate('senderId', 'username displayName avatar type')
+          .then((m) => m.populate('mentions', 'username displayName'))
+          .then((m) =>
+            m.populate({
+              path: 'replyTo',
+              select: 'content type isRecalled isDeleted senderId attachments',
+              populate: { path: 'senderId', select: 'username displayName type' },
+            })
+          );
 
         conversation.participants.forEach((participantId) => {
           io.to(String(participantId)).emit(SOCKET_EVENTS.RECEIVE_MESSAGE, populatedMessage);

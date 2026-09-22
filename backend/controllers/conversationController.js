@@ -11,7 +11,7 @@ export const getConversations = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const conversations = await Conversation.find({ participants: req.userId })
-      .populate('participants', 'username avatar isOnline type')
+      .populate('participants', 'username displayName avatar isOnline type')
       .populate('lastMessage')
       .sort({ updatedAt: -1 })
       .skip((page - 1) * limit)
@@ -36,7 +36,7 @@ export const createConversation = async (req, res) => {
     if (!conversation) {
       conversation = await Conversation.create({ participants: [req.userId, participantId], type: 'direct' });
     }
-    conversation = await conversation.populate('participants', 'username avatar isOnline type');
+    conversation = await conversation.populate('participants', 'username displayName avatar isOnline type');
     res.status(201).json(conversation);
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
@@ -65,7 +65,7 @@ export const createGroup = async (req, res) => {
       adminId: req.userId,
       isPublic: isPublic === false ? false : true,
     });
-    conversation = await conversation.populate('participants', 'username avatar isOnline type');
+    conversation = await conversation.populate('participants', 'username displayName avatar isOnline type');
     res.status(201).json(conversation);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -89,7 +89,7 @@ export const joinGroup = async (req, res) => {
     }
     conversation.participants.push(req.userId);
     await conversation.save();
-    const populated = await conversation.populate('participants', 'username avatar isOnline type');
+    const populated = await conversation.populate('participants', 'username displayName avatar isOnline type');
     await broadcastToConversation(id, SOCKET_EVENTS.GROUP_MEMBER_JOINED, { conversationId: id, userId: req.userId, conversation: populated });
     res.status(200).json(populated);
   } catch (err) {
@@ -111,7 +111,7 @@ export const addMember = async (req, res) => {
     if (conversation.participants.length >= MAX_GROUP_MEMBERS) return res.status(400).json({ message: `Nhom da dat toi da ${MAX_GROUP_MEMBERS} thanh vien` });
     conversation.participants.push(userId);
     await conversation.save();
-    const populated = await conversation.populate('participants', 'username avatar isOnline type');
+    const populated = await conversation.populate('participants', 'username displayName avatar isOnline type');
     await broadcastToConversation(id, SOCKET_EVENTS.GROUP_MEMBER_JOINED, { conversationId: id, userId, conversation: populated });
     res.status(200).json(populated);
   } catch (err) {
@@ -174,7 +174,7 @@ export const updateGroupInfo = async (req, res) => {
     if (typeof avatar === 'string') conversation.avatar = avatar;
     if (typeof isPublic === 'boolean') conversation.isPublic = isPublic;
     await conversation.save();
-    const populated = await conversation.populate('participants', 'username avatar isOnline type');
+    const populated = await conversation.populate('participants', 'username displayName avatar isOnline type');
     await broadcastToConversation(id, SOCKET_EVENTS.GROUP_UPDATED, { conversation: populated });
     res.json(populated);
   } catch (err) {
@@ -185,7 +185,7 @@ export const updateGroupInfo = async (req, res) => {
 export const getGroupMembers = async (req, res) => {
   try {
     const { id } = req.params;
-    const conversation = await Conversation.findById(id).populate('participants', 'username avatar isOnline type');
+    const conversation = await Conversation.findById(id).populate('participants', 'username displayName avatar isOnline type');
     if (!conversation) return res.status(404).json({ message: 'Khong tim thay nhom' });
     if (!conversation.participants.map((p) => String(p._id)).includes(req.userId)) {
       return res.status(403).json({ message: 'Ban khong o trong nhom nay' });
@@ -207,12 +207,63 @@ export const getMessages = async (req, res) => {
       return res.status(403).json({ message: 'Ban khong co quyen xem hoi thoai nay' });
     }
     const messages = await Message.find({ conversationId: id })
-      .populate('senderId', 'username avatar type')
+      .populate('senderId', 'username displayName avatar type')
+      .populate('mentions', 'username displayName')
+      .populate({
+        path: 'replyTo',
+        select: 'content type isRecalled isDeleted senderId attachments',
+        populate: { path: 'senderId', select: 'username displayName type' },
+      })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit);
     const totalCount = await Message.countDocuments({ conversationId: id });
     res.json({ messages: messages.reverse(), page, hasMore: page * limit < totalCount });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+
+// GET /api/conversations/:id/media - tong hop file/anh/link
+const LINK_REGEX = /(https?:\/\/[^\s]+)/gi;
+const LINK_REGEX_QUERY = /https?:\/\/[^\s]+/i;
+
+export const getConversationMedia = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const conversation = await Conversation.findById(id);
+    if (!conversation) return res.status(404).json({ message: 'Khong tim thay hoi thoai' });
+    if (!conversation.participants.map(String).includes(req.userId)) {
+      return res.status(403).json({ message: 'Ban khong co quyen xem hoi thoai nay' });
+    }
+
+    const messages = await Message.find({
+      conversationId: id,
+      isDeleted: false,
+      isRecalled: false,
+      $or: [{ 'attachments.0': { $exists: true } }, { content: { $regex: LINK_REGEX_QUERY } }],
+    })
+      .populate('senderId', 'username displayName avatar type')
+      .sort({ createdAt: -1 })
+      .limit(300);
+
+    const images = [];
+    const files = [];
+    const links = [];
+
+    for (const msg of messages) {
+      (msg.attachments || []).forEach((att) => {
+        const entry = { messageId: msg._id, createdAt: msg.createdAt, sender: msg.senderId, ...att.toObject?.() ?? att };
+        if (att.fileType && att.fileType.startsWith('image/')) images.push(entry);
+        else files.push(entry);
+      });
+      const found = (msg.content || '').match(LINK_REGEX);
+      if (found) {
+        found.forEach((url) => links.push({ messageId: msg._id, createdAt: msg.createdAt, sender: msg.senderId, url }));
+      }
+    }
+
+    res.json({ images, files, links });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }

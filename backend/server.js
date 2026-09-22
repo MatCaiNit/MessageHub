@@ -4,6 +4,8 @@ dotenv.config();
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
 import connectDB from './config/db.js';
@@ -26,6 +28,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 app.use('/api/auth', authRoutes);

@@ -16,10 +16,9 @@ const router = express.Router();
 
 router.use(protect);
 
-// QUAN TRONG: /hubs phai dat TRUOC /:id de tranh Express hieu nham "hubs" la 1 deviceId
-router.get('/hubs', listDeviceHubs);
-
 router.post('/', registerDeviceRules, validate, registerDevice);
+
+router.get('/hubs', listDeviceHubs);
 router.get('/', listMyDevices);
 router.patch('/:id/revoke', deviceIdParamRule, validate, revokeDevice);
 router.patch('/:id/regenerate-key', deviceIdParamRule, validate, regenerateApiKey);

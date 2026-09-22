@@ -10,6 +10,7 @@ import {
   updateGroupInfo,
   getGroupMembers,
   getMessages,
+  getConversationMedia,
 } from '../controllers/conversationController.js';
 import { protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -38,5 +39,6 @@ router.delete('/:id/members/:userId', kickMemberParamRules, validate, kickMember
 router.patch('/:id', updateGroupInfoRules, validate, updateGroupInfo);
 
 router.get('/:id/messages', conversationIdParamRule, validate, getMessages);
+router.get('/:id/media', conversationIdParamRule, validate, getConversationMedia);
 
 export default router;
