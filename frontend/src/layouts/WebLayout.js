@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, ActivityIndicator, ScrollView,
+  StyleSheet, ActivityIndicator, ScrollView, Image, Linking,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { useConversations } from '../hooks/useConversations';
 import { useMessages } from '../hooks/useMessages';
 import { useTyping } from '../hooks/useTyping';
-import { conversationApi, userApi, deviceApi, authApi } from '../api';
+import { conversationApi, userApi, deviceApi, authApi, messageApi, resolveFileUrl } from '../api';
 import client from '../api/client';
 import Avatar from '../components/Avatar';
 import MessageBubble from '../components/MessageBubble';
 import TypingIndicator from '../components/TypingIndicator';
+import { Icon } from '../utils/icons';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 
 // ─── Layout gốc ──────────────────────────────────────────────────────────────
@@ -116,7 +117,7 @@ export default function WebLayout() {
           />
           <View style={s.chatPanel}>
             {activeConv
-              ? <ChatPanel conv={activeConv} me={me} />
+              ? <ChatPanel conv={activeConv} me={me} onLeftConversation={() => selectConv(null)} />
               : <EmptyState
                   icon="💬"
                   title="Chọn một cuộc trò chuyện"
@@ -139,7 +140,7 @@ export default function WebLayout() {
           />
           <View style={s.chatPanel}>
             {activeConv
-              ? <ChatPanel conv={activeConv} me={me} />
+              ? <ChatPanel conv={activeConv} me={me} onLeftConversation={() => selectConv(null)} />
               : <EmptyState
                   icon="⚡"
                   title="Chọn một thiết bị"
@@ -743,9 +744,7 @@ function CreateGroupInline({ onClose, onCreated }) {
 function AddDeviceInline({ onClose, onCreate }) {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // ─ Moi: cho phep chon giua "Tao moi" hoac "Ghep vao hub co san" ─
-  const [mode, setMode] = useState('new'); // 'new' | 'join'
+  const [mode, setMode] = useState('new'); // 'new' = tạo hội thoại mới | 'join' = ghép vào hub có sẵn
   const [hubs, setHubs] = useState([]);
   const [loadingHubs, setLoadingHubs] = useState(true);
   const [selectedHubId, setSelectedHubId] = useState(null);
@@ -759,10 +758,7 @@ function AddDeviceInline({ onClose, onCreate }) {
 
   const submit = async () => {
     if (name.trim().length < 2) { window.alert('Tên phải từ 2 ký tự'); return; }
-    if (mode === 'join' && !selectedHubId) {
-      window.alert('Vui lòng chọn 1 cuộc trò chuyện để ghép vào');
-      return;
-    }
+    if (mode === 'join' && !selectedHubId) { window.alert('Vui lòng chọn 1 cuộc trò chuyện để ghép vào'); return; }
     setLoading(true);
     await onCreate(name.trim(), mode === 'join' ? selectedHubId : undefined);
     setLoading(false);
@@ -776,59 +772,53 @@ function AddDeviceInline({ onClose, onCreate }) {
         <TouchableOpacity onPress={onClose}><Text style={cg.close}>✕</Text></TouchableOpacity>
       </View>
 
-      {/* Toggle: Tao moi / Ghep vao hub co san */}
       <View style={adm.modeRow}>
         <TouchableOpacity
           style={[adm.modeBtn, mode === 'new' && adm.modeBtnActive]}
           onPress={() => setMode('new')}
         >
-          <Text style={[adm.modeBtnText, mode === 'new' && adm.modeBtnTextActive]}>
-            + Tạo cuộc trò chuyện mới
-          </Text>
+          <Text style={[adm.modeBtnText, mode === 'new' && adm.modeBtnTextActive]}>Tạo hội thoại mới</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[adm.modeBtn, mode === 'join' && adm.modeBtnActive]}
           onPress={() => setMode('join')}
           disabled={hubs.length === 0}
         >
-          <Text style={[adm.modeBtnText, mode === 'join' && adm.modeBtnTextActive,
-                        hubs.length === 0 && adm.modeBtnTextDisabled]}>
-            🔗 Ghép vào cuộc trò chuyện có sẵn
-          </Text>
+          <Text style={[adm.modeBtnText, mode === 'join' && adm.modeBtnTextActive]}>Ghép vào hub có sẵn</Text>
         </TouchableOpacity>
       </View>
 
-      <TextInput style={cg.nameInput} placeholder="VD: ESP32 phòng khách"
-        placeholderTextColor={C.dim} value={name} onChangeText={setName} autoFocus />
-
       {mode === 'join' && (
-        <View style={adm.hubList}>
-          {loadingHubs ? (
-            <ActivityIndicator color={C.accent} style={{ padding: 10 }} />
-          ) : hubs.length === 0 ? (
-            <Text style={adm.hubEmpty}>Chưa có cuộc trò chuyện thiết bị nào để ghép vào.</Text>
-          ) : (
-            hubs.map((hub) => (
+        loadingHubs ? (
+          <ActivityIndicator color={C.accent} style={{ marginVertical: 10 }} />
+        ) : hubs.length === 0 ? (
+          <Text style={adm.emptyHubText}>Bạn chưa có hội thoại thiết bị nào để ghép vào.</Text>
+        ) : (
+          <ScrollView style={adm.hubList}>
+            {hubs.map((h) => (
               <TouchableOpacity
-                key={hub._id}
-                style={[adm.hubItem, selectedHubId === hub._id && adm.hubItemActive]}
-                onPress={() => setSelectedHubId(hub._id)}
+                key={h._id}
+                style={[adm.hubItem, selectedHubId === h._id && adm.hubItemActive]}
+                onPress={() => setSelectedHubId(h._id)}
               >
-                <Text style={adm.hubIcon}>{selectedHubId === hub._id ? '●' : '○'}</Text>
-                <Text style={adm.hubName} numberOfLines={1}>{hub.name}</Text>
-                <Text style={adm.hubCount}>{hub.deviceCount} thiết bị</Text>
+                <Text style={{ fontSize: 16 }}>{selectedHubId === h._id ? '●' : '○'}</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={adm.hubName} numberOfLines={1}>{h.name}</Text>
+                  <Text style={adm.hubMeta}>{h.deviceCount} thiết bị trong hội thoại này</Text>
+                </View>
               </TouchableOpacity>
-            ))
-          )}
-        </View>
+            ))}
+          </ScrollView>
+        )
       )}
 
+      <TextInput style={cg.nameInput} placeholder="VD: ESP32 phòng khách"
+        placeholderTextColor={C.dim} value={name} onChangeText={setName} autoFocus />
       <Text style={cg.hint}>
-        {mode === 'new'
-          ? 'Sau khi tạo, bạn sẽ nhận API key — chỉ hiện MỘT lần, hãy sao lưu ngay.'
-          : 'Thiết bị mới sẽ gửi tin vào chung cuộc trò chuyện đã chọn, hiện tên riêng cho từng thiết bị.'}
+        {mode === 'join'
+          ? 'Thiết bị mới sẽ gửi tin nhắn chung vào hội thoại đã chọn ở trên.'
+          : 'Sau khi tạo, bạn sẽ nhận API key — chỉ hiện MỘT lần, hãy sao lưu ngay.'}
       </Text>
-
       <TouchableOpacity style={[cg.createBtn, !name.trim() && cg.disabled]}
         onPress={submit} disabled={!name.trim() || loading}>
         {loading ? <ActivityIndicator color={C.white} /> : <Text style={cg.createText}>Tạo</Text>}
@@ -836,34 +826,6 @@ function AddDeviceInline({ onClose, onCreate }) {
     </View>
   );
 }
-
-const adm = StyleSheet.create({
-  modeRow: { flexDirection: 'row', gap: 6, marginBottom: 10 },
-  modeBtn: {
-    flex: 1, paddingVertical: 8, paddingHorizontal: 8,
-    borderRadius: RADIUS.sm, borderWidth: 1, borderColor: C.border,
-    backgroundColor: C.panel, alignItems: 'center', cursor: 'pointer',
-  },
-  modeBtnActive: { backgroundColor: C.accentDim, borderColor: C.accent },
-  modeBtnText: { fontSize: FONT.xs, color: C.dim, fontWeight: '600', textAlign: 'center' },
-  modeBtnTextActive: { color: C.accentText },
-  modeBtnTextDisabled: { opacity: 0.4 },
-
-  hubList: {
-    backgroundColor: C.panel, borderRadius: RADIUS.sm,
-    borderWidth: 1, borderColor: C.border, marginBottom: 8, maxHeight: 160,
-  },
-  hubEmpty: { fontSize: FONT.xs, color: C.dim, padding: 12, textAlign: 'center' },
-  hubItem: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingHorizontal: 10, paddingVertical: 8,
-    borderBottomWidth: 1, borderBottomColor: C.borderLight, cursor: 'pointer',
-  },
-  hubItemActive: { backgroundColor: C.accentDim },
-  hubIcon: { fontSize: FONT.sm, color: C.accent },
-  hubName: { flex: 1, fontSize: FONT.sm, color: C.text, fontWeight: '500' },
-  hubCount: { fontSize: FONT.xs, color: C.dim },
-});
 
 // ─── Inline: Hiện API key ───────────────────────────────────────────────────
 function ShowKeyInline({ title, apiKey, onClose }) {
@@ -951,9 +913,15 @@ function EmojiPicker({ visible, onSelect, onClose }) {
 }
 
 // ─── Khung chat phải ─────────────────────────────────────────────────────────
-function ChatPanel({ conv, me }) {
+function ChatPanel({ conv, me, onLeftConversation }) {
   const [inputValue, setInputValue] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const {
     messages, hasMore, loadingOlder, flatListRef,
     loadMessages, loadOlder, sendMessage, recallMessage, deleteMessage,
@@ -967,7 +935,16 @@ function ChatPanel({ conv, me }) {
     loadMessages(true);
     setInputValue('');
     setShowEmoji(false);
+    setReplyingTo(null);
+    setMentionQuery(null);
     lastMsgIdRef.current = null; // reset khi đổi conv
+  }, [conv._id]);
+
+  // Danh sách thành viên hội thoại - dùng cho @mention và panel bên phải
+  useEffect(() => {
+    conversationApi.getGroupMembers(conv._id)
+      .then(({ data }) => setMembers(data.members || []))
+      .catch(() => setMembers([]));
   }, [conv._id]);
 
   // ─ AUTO-SCROLL: khi có tin nhắn MỚI (send hoặc receive), tự cuộn xuống cuối ─
@@ -989,12 +966,42 @@ function ChatPanel({ conv, me }) {
     attempt(250);
   }, [messages]);
 
+  // @<tên hiển thị> của member -> dùng để hiển thị + để so khớp mentions khi gửi
+  const memberDisplayName = (u) => u?.displayName?.trim() || u?.username || '';
+
+  const computeMentions = (text) =>
+    members
+      .filter((u) => String(u._id) !== String(me._id) && text.includes('@' + memberDisplayName(u)))
+      .map((u) => u._id);
+
+  const mentionSuggestions = mentionQuery === null
+    ? []
+    : members
+        .filter((u) => String(u._id) !== String(me._id))
+        .filter((u) => memberDisplayName(u).toLowerCase().includes(mentionQuery.toLowerCase()))
+        .slice(0, 6);
+
   const handleSend = () => {
     if (!inputValue.trim()) return;
-    sendMessage(inputValue);
+    sendMessage({ content: inputValue, replyTo: replyingTo?._id, mentions: computeMentions(inputValue) });
     setInputValue('');
+    setReplyingTo(null);
+    setMentionQuery(null);
     stopTyping();
     setShowEmoji(false);
+  };
+
+  const handleChangeText = (t) => {
+    setInputValue(t);
+    emitTyping();
+    // Phát hiện "@partial" ở cuối chuỗi đang gõ để hiện gợi ý @mention
+    const match = t.match(/@([^\s@]{0,24})$/);
+    setMentionQuery(match ? match[1] : null);
+  };
+
+  const pickMention = (user) => {
+    setInputValue((prev) => prev.replace(/@([^\s@]{0,24})$/, `@${memberDisplayName(user)} `));
+    setMentionQuery(null);
   };
 
   const handleKeyDown = (e) => {
@@ -1020,7 +1027,31 @@ function ChatPanel({ conv, me }) {
     // Không đóng picker để user chọn tiếp nhiều emoji
   };
 
+  // ── Gửi file/ảnh đính kèm ──
+  const handlePickFile = () => fileInputRef.current?.click();
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const { data } = await messageApi.upload(file);
+      sendMessage({
+        content: '',
+        replyTo: replyingTo?._id,
+        attachments: [{ url: data.url, fileType: data.fileType, fileName: data.fileName, fileSize: data.fileSize }],
+      });
+      setReplyingTo(null);
+    } catch (err) {
+      window.alert('Lỗi gửi file: ' + (err.response?.data?.message || err.message));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   return (
+    <View style={{ flex: 1, flexDirection: 'row', minWidth: 0 }}>
     <View style={cp.container}>
       <View style={cp.header}>
         <Avatar name={conv.name} isDevice={conv.type === 'device'} size="md" />
@@ -1030,6 +1061,13 @@ function ChatPanel({ conv, me }) {
             {conv.type === 'device' ? '⚡ Thiết bị' : conv.type === 'group' ? '👥 Nhóm' : '● Đang hoạt động'}
           </Text>
         </View>
+        <TouchableOpacity
+          style={[cp.infoBtn, showInfo && cp.infoBtnActive]}
+          onPress={() => setShowInfo((v) => !v)}
+          title="Thông tin hội thoại"
+        >
+          <Icon name="information-circle-outline" size={20} color={showInfo ? C.accentText : C.dim} />
+        </TouchableOpacity>
       </View>
 
       {hasMore && (
@@ -1056,12 +1094,44 @@ function ChatPanel({ conv, me }) {
             <MessageBubble
               message={item} isMine={isMine}
               isSameSender={isSameSender} onLongPress={onLongPress}
+              onReply={setReplyingTo}
             />
           );
         }}
       />
 
       <TypingIndicator text={typingText} />
+
+      {/* Đang trả lời 1 tin nhắn */}
+      {replyingTo && (
+        <View style={cp.replyBar}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={cp.replyBarName} numberOfLines={1}>
+              Trả lời {replyingTo.senderId?.displayName?.trim() || replyingTo.senderId?.username || 'Ai đó'}
+            </Text>
+            <Text style={cp.replyBarText} numberOfLines={1}>
+              {replyingTo.isRecalled
+                ? 'Tin nhắn đã thu hồi'
+                : replyingTo.content || (replyingTo.attachments?.length ? '📎 Tệp đính kèm' : '')}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setReplyingTo(null)}>
+            <Text style={{ fontSize: 16, color: C.dim }}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Gợi ý @mention */}
+      {mentionQuery !== null && mentionSuggestions.length > 0 && (
+        <View style={cp.mentionBox}>
+          {mentionSuggestions.map((u) => (
+            <TouchableOpacity key={u._id} style={cp.mentionItem} onPress={() => pickMention(u)}>
+              <Avatar name={memberDisplayName(u)} isDevice={u.type === 'device'} size="sm" />
+              <Text style={cp.mentionItemText}>{memberDisplayName(u)}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {/* Emoji picker (floating panel) */}
       <EmojiPicker
@@ -1079,13 +1149,29 @@ function ChatPanel({ conv, me }) {
           <Text style={cp.emojiIcon}>😊</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={cp.emojiBtn}
+          onPress={handlePickFile}
+          disabled={uploading}
+          title="Gửi file/ảnh đính kèm"
+        >
+          {uploading ? <ActivityIndicator size="small" color={C.accent} /> : <Text style={cp.emojiIcon}>📎</Text>}
+        </TouchableOpacity>
+        {/* input file ẩn - chỉ chạy trên web */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={handleFileChange}
+        />
+
         <View style={cp.inputWrap}>
           <TextInput
             style={cp.input}
-            placeholder="Nhập tin nhắn... (Enter để gửi, Shift+Enter xuống dòng)"
+            placeholder="Nhập tin nhắn... (Enter để gửi, Shift+Enter xuống dòng, @ để nhắc ai đó)"
             placeholderTextColor={C.dim}
             value={inputValue}
-            onChangeText={(t) => { setInputValue(t); emitTyping(); }}
+            onChangeText={handleChangeText}
             onKeyPress={handleKeyDown}
             onFocus={() => setShowEmoji(false)}
             multiline
@@ -1098,6 +1184,371 @@ function ChatPanel({ conv, me }) {
           disabled={!inputValue.trim()}
         >
           <Text style={{ fontSize: 20, color: inputValue.trim() ? C.white : C.dim }}>➤</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+
+    {showInfo && (
+      <RightPanel
+        conv={conv}
+        me={me}
+        onClose={() => setShowInfo(false)}
+        onLeft={() => { setShowInfo(false); onLeftConversation?.(); }}
+      />
+    )}
+    </View>
+  );
+}
+
+// ─── Panel thông tin hội thoại bên phải: thành viên / rời nhóm / file-ảnh-link ─
+function RightPanel({ conv, me, onClose, onLeft }) {
+  const [tab, setTab] = useState('members'); // 'members' | 'media'
+  const [mediaTab, setMediaTab] = useState('images'); // 'images' | 'files' | 'links'
+  const [members, setMembers] = useState([]);
+  const [adminId, setAdminId] = useState(null);
+  const [loadingMembers, setLoadingMembers] = useState(true);
+  const [media, setMedia] = useState({ images: [], files: [], links: [] });
+  const [loadingMedia, setLoadingMedia] = useState(false);
+  const [showAddMember, setShowAddMember] = useState(false);
+
+  const isGroup = conv.type === 'group';
+  const isDeviceConv = conv.type === 'device';
+
+  const loadMembers = useCallback(async () => {
+    setLoadingMembers(true);
+    try {
+      const { data } = await conversationApi.getGroupMembers(conv._id);
+      setMembers(data.members || []);
+      setAdminId(data.adminId);
+    } catch (err) {
+      console.error('RightPanel loadMembers:', err);
+    } finally {
+      setLoadingMembers(false);
+    }
+  }, [conv._id]);
+
+  useEffect(() => { loadMembers(); }, [loadMembers]);
+
+  useEffect(() => {
+    if (tab !== 'media') return;
+    setLoadingMedia(true);
+    conversationApi.getMedia(conv._id)
+      .then(({ data }) => setMedia(data))
+      .catch(() => setMedia({ images: [], files: [], links: [] }))
+      .finally(() => setLoadingMedia(false));
+  }, [tab, conv._id]);
+
+  const isAdmin = String(adminId) === String(me._id);
+
+  const handleLeave = async () => {
+    if (!window.confirm('Rời khỏi nhóm này? Bạn sẽ không thấy tin nhắn mới nữa.')) return;
+    try {
+      await conversationApi.leaveGroup(conv._id);
+      onLeft?.();
+    } catch (err) {
+      window.alert('Lỗi: ' + (err.response?.data?.message || err.message));
+    }
+  };
+
+  const handleKick = async (userId) => {
+    if (!window.confirm('Xoá thành viên này khỏi nhóm?')) return;
+    try {
+      await conversationApi.kickMember(conv._id, userId);
+      loadMembers();
+    } catch (err) {
+      window.alert('Lỗi: ' + (err.response?.data?.message || err.message));
+    }
+  };
+
+  return (
+    <View style={rpnl.container}>
+      <View style={rpnl.header}>
+        <Text style={rpnl.headerTitle}>Thông tin hội thoại</Text>
+        <TouchableOpacity onPress={onClose}><Text style={{ fontSize: 18, color: C.dim }}>✕</Text></TouchableOpacity>
+      </View>
+
+      <View style={rpnl.tabs}>
+        <TouchableOpacity style={[rpnl.tabBtn, tab === 'members' && rpnl.tabBtnActive]} onPress={() => setTab('members')}>
+          <Text style={[rpnl.tabText, tab === 'members' && rpnl.tabTextActive]}>Thành viên</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[rpnl.tabBtn, tab === 'media' && rpnl.tabBtnActive]} onPress={() => setTab('media')}>
+          <Text style={[rpnl.tabText, tab === 'media' && rpnl.tabTextActive]}>File / Ảnh / Link</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={{ flex: 1 }}>
+        {tab === 'members' ? (
+          loadingMembers ? (
+            <ActivityIndicator color={C.accent} style={{ marginTop: 24 }} />
+          ) : (
+            <>
+              {(isGroup || isDeviceConv) && isAdmin && (
+                <TouchableOpacity style={rpnl.addMemberBtn} onPress={() => setShowAddMember(true)}>
+                  <Text style={rpnl.addMemberText}>+ Thêm thành viên / thiết bị</Text>
+                </TouchableOpacity>
+              )}
+              {members.map((m) => (
+                <View key={m._id} style={rpnl.memberRow}>
+                  <Avatar name={m.displayName?.trim() || m.username} isDevice={m.type === 'device'} size="sm" />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={rpnl.memberName} numberOfLines={1}>
+                      {m.displayName?.trim() || m.username}{String(m._id) === String(me._id) ? ' (Bạn)' : ''}
+                    </Text>
+                    {String(m._id) === String(adminId) && <Text style={rpnl.adminTag}>Quản trị viên</Text>}
+                  </View>
+                  {isGroup && isAdmin && String(m._id) !== String(me._id) && (
+                    <TouchableOpacity onPress={() => handleKick(m._id)}>
+                      <Text style={{ color: C.danger, fontSize: FONT.xs, fontWeight: '600' }}>Xoá</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+              {isGroup && (
+                <TouchableOpacity style={rpnl.leaveBtn} onPress={handleLeave}>
+                  <Icon name="exit-outline" size={16} color={C.danger} />
+                  <Text style={rpnl.leaveText}>Rời khỏi nhóm</Text>
+                </TouchableOpacity>
+              )}
+            </>
+          )
+        ) : (
+          <MediaTabs media={media} loading={loadingMedia} mediaTab={mediaTab} setMediaTab={setMediaTab} />
+        )}
+      </ScrollView>
+
+      {showAddMember && (
+        <AddMemberInline
+          conv={conv}
+          existingMembers={members}
+          onClose={() => setShowAddMember(false)}
+          onAdded={() => { setShowAddMember(false); loadMembers(); }}
+        />
+      )}
+    </View>
+  );
+}
+
+// ─── Tab con: Ảnh / File / Link đã chia sẻ trong hội thoại ───────────────────
+function MediaTabs({ media, loading, mediaTab, setMediaTab }) {
+  if (loading) return <ActivityIndicator color={C.accent} style={{ marginTop: 24 }} />;
+
+  return (
+    <View>
+      <View style={rpnl.mediaSubTabs}>
+        {[
+          ['images', `Ảnh (${media.images.length})`],
+          ['files', `File (${media.files.length})`],
+          ['links', `Link (${media.links.length})`],
+        ].map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            style={[rpnl.mediaSubBtn, mediaTab === key && rpnl.mediaSubBtnActive]}
+            onPress={() => setMediaTab(key)}
+          >
+            <Text style={[rpnl.mediaSubText, mediaTab === key && rpnl.mediaSubTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {mediaTab === 'images' && (
+        media.images.length === 0 ? (
+          <EmptyMedia text="Chưa có ảnh nào được chia sẻ" />
+        ) : (
+          <View style={rpnl.imageGrid}>
+            {media.images.map((img, i) => (
+              <TouchableOpacity key={i} onPress={() => Linking.openURL(resolveFileUrl(img.url))}>
+                <Image source={{ uri: resolveFileUrl(img.url) }} style={rpnl.imageThumb} resizeMode="cover" />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )
+      )}
+
+      {mediaTab === 'files' && (
+        media.files.length === 0 ? (
+          <EmptyMedia text="Chưa có tệp nào được chia sẻ" />
+        ) : (
+          media.files.map((f, i) => (
+            <TouchableOpacity key={i} style={rpnl.mediaFileRow} onPress={() => Linking.openURL(resolveFileUrl(f.url))}>
+              <View style={rpnl.mediaFileIcon}>
+                <Icon name="document-text-outline" size={16} color={C.accentText} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={rpnl.mediaFileName} numberOfLines={1}>{f.fileName || 'Tệp đính kèm'}</Text>
+                <Text style={rpnl.mediaFileMeta}>{f.sender?.displayName?.trim() || f.sender?.username || ''}</Text>
+              </View>
+            </TouchableOpacity>
+          ))
+        )
+      )}
+
+      {mediaTab === 'links' && (
+        media.links.length === 0 ? (
+          <EmptyMedia text="Chưa có link nào được chia sẻ" />
+        ) : (
+          media.links.map((l, i) => (
+            <TouchableOpacity key={i} style={rpnl.mediaLinkRow} onPress={() => Linking.openURL(l.url)}>
+              <Text style={rpnl.mediaLinkUrl} numberOfLines={1}>{l.url}</Text>
+              <Text style={rpnl.mediaLinkMeta}>{l.sender?.displayName?.trim() || l.sender?.username || ''}</Text>
+            </TouchableOpacity>
+          ))
+        )
+      )}
+    </View>
+  );
+}
+
+function EmptyMedia({ text }) {
+  return (
+    <View style={rpnl.emptyMedia}>
+      <Icon name="folder-outline" size={28} color={C.dim} />
+      <Text style={rpnl.emptyMediaText}>{text}</Text>
+    </View>
+  );
+}
+
+// ─── Inline modal: thêm thành viên (người) và/hoặc thiết bị của chính mình ────
+function AddMemberInline({ conv, existingMembers, onClose, onAdded }) {
+  const [query, setQuery] = useState('');
+  const [userResults, setUserResults] = useState([]);
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const [myDevices, setMyDevices] = useState([]);
+  const [selectedDevices, setSelectedDevices] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  const isDeviceConv = conv.type === 'device';
+  const existingIds = existingMembers.map((m) => String(m._id));
+
+  // Tìm người dùng theo tên (debounce nhẹ)
+  useEffect(() => {
+    if (!query.trim()) { setUserResults([]); return; }
+    const t = setTimeout(() => {
+      userApi.search(query.trim())
+        .then(({ data }) => setUserResults(
+          (data || []).filter((u) => u.type !== 'device' && !existingIds.includes(String(u._id)))
+        ))
+        .catch(() => setUserResults([]));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Với hội thoại thiết bị: liệt kê các thiết bị KHÁC của chính mình để có thể kéo vào chung 1 hội thoại
+  useEffect(() => {
+    if (!isDeviceConv) return;
+    deviceApi.listMine()
+      .then(({ data }) => {
+        const own = (data || []).filter((d) => {
+          const linkedId = String(d.linkedUserAccountId || '');
+          return !existingIds.includes(linkedId);
+        });
+        setMyDevices(own);
+      })
+      .catch(() => setMyDevices([]));
+  }, [isDeviceConv]);
+
+  const toggleUser = (u) => {
+    setSelectedUsers((prev) =>
+      prev.some((x) => x._id === u._id) ? prev.filter((x) => x._id !== u._id) : [...prev, u]
+    );
+  };
+  const toggleDevice = (d) => {
+    setSelectedDevices((prev) =>
+      prev.some((x) => x._id === d._id) ? prev.filter((x) => x._id !== d._id) : [...prev, d]
+    );
+  };
+
+  const submit = async () => {
+    if (selectedUsers.length === 0 && selectedDevices.length === 0) return;
+    setSubmitting(true);
+    try {
+      if (isDeviceConv) {
+        // Cần 1 deviceId thuộc hội thoại này, do chính mình sở hữu, để gọi POST /api/devices/:id/members
+        const { data: allMine } = await deviceApi.listMine();
+        const anchor = allMine.find(
+          (d) => String(d.conversationId?._id || d.conversationId) === String(conv._id)
+        );
+        if (!anchor) {
+          window.alert('Bạn không phải chủ sở hữu của bất kỳ thiết bị nào trong hội thoại này nên không thể thêm thành viên.');
+          setSubmitting(false);
+          return;
+        }
+        for (const u of selectedUsers) await deviceApi.addMember(anchor._id, u._id);
+        for (const d of selectedDevices) await deviceApi.addDeviceMember(anchor._id, d._id);
+      } else {
+        for (const u of selectedUsers) await conversationApi.addMember(conv._id, u._id);
+      }
+      onAdded();
+    } catch (err) {
+      window.alert('Lỗi: ' + (err.response?.data?.message || err.message));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const canSubmit = selectedUsers.length > 0 || selectedDevices.length > 0;
+
+  return (
+    <View style={am.overlay}>
+      <View style={am.card}>
+        <View style={am.header}>
+          <Text style={am.title}>Thêm vào hội thoại</Text>
+          <TouchableOpacity onPress={onClose}><Text style={am.close}>✕</Text></TouchableOpacity>
+        </View>
+
+        <Text style={am.sectionLabel}>TÌM NGƯỜI DÙNG</Text>
+        <TextInput
+          style={am.searchInput}
+          placeholder="Nhập tên hoặc email..."
+          placeholderTextColor={C.dim}
+          value={query}
+          onChangeText={setQuery}
+        />
+        <ScrollView style={am.list}>
+          {[...selectedUsers.filter((u) => !userResults.some((r) => r._id === u._id)), ...userResults].map((u) => {
+            const checked = selectedUsers.some((x) => x._id === u._id);
+            return (
+              <TouchableOpacity key={u._id} style={am.optionRow} onPress={() => toggleUser(u)}>
+                <View style={[am.checkbox, checked && am.checkboxOn]}>
+                  {checked && <Text style={{ color: C.white, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                </View>
+                <Avatar name={u.displayName?.trim() || u.username} size="sm" />
+                <Text style={am.optionName}>{u.displayName?.trim() || u.username}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {isDeviceConv && myDevices.length > 0 && (
+          <>
+            <Text style={am.sectionLabel}>THIẾT BỊ CỦA BẠN (kéo vào chung hội thoại này)</Text>
+            <ScrollView style={am.list}>
+              {myDevices.map((d) => {
+                const checked = selectedDevices.some((x) => x._id === d._id);
+                return (
+                  <TouchableOpacity key={d._id} style={am.optionRow} onPress={() => toggleDevice(d)}>
+                    <View style={[am.checkbox, checked && am.checkboxOn]}>
+                      {checked && <Text style={{ color: C.white, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                    </View>
+                    <Avatar name={d.name} isDevice size="sm" />
+                    <Text style={am.optionName}>{d.name}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </>
+        )}
+
+        <TouchableOpacity
+          style={[am.submitBtn, (!canSubmit || submitting) && am.disabled]}
+          onPress={submit}
+          disabled={!canSubmit || submitting}
+        >
+          {submitting
+            ? <ActivityIndicator color={C.white} />
+            : <Text style={am.submitBtnText}>
+                Thêm {selectedUsers.length + selectedDevices.length > 0 ? `(${selectedUsers.length + selectedDevices.length})` : ''}
+              </Text>
+          }
         </TouchableOpacity>
       </View>
     </View>
@@ -1361,6 +1812,34 @@ const cp = StyleSheet.create({
     backgroundColor: C.accent, justifyContent: 'center', alignItems: 'center', ...SHADOW.sm,
   },
   sendBtnOff: { backgroundColor: C.panel2 },
+
+  infoBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    justifyContent: 'center', alignItems: 'center', cursor: 'pointer',
+  },
+  infoBtnActive: { backgroundColor: C.accentDim },
+
+  replyBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    marginHorizontal: 16, marginTop: 8,
+    paddingHorizontal: 12, paddingVertical: 8,
+    backgroundColor: C.panel2, borderRadius: RADIUS.md,
+    borderLeftWidth: 3, borderLeftColor: C.accent,
+  },
+  replyBarName: { fontSize: FONT.xs, fontWeight: '700', color: C.accentText },
+  replyBarText: { fontSize: FONT.xs, color: C.dim, marginTop: 1 },
+
+  mentionBox: {
+    marginHorizontal: 16, marginBottom: 4,
+    backgroundColor: C.panel, borderRadius: RADIUS.md,
+    borderWidth: 1, borderColor: C.border, ...SHADOW.md,
+    maxHeight: 220, overflow: 'hidden',
+  },
+  mentionItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 8, cursor: 'pointer',
+  },
+  mentionItemText: { fontSize: FONT.sm, color: C.text, fontWeight: '600' },
 });
 
 // Emoji picker styles
@@ -1465,4 +1944,130 @@ const p = StyleSheet.create({
   rowBtnSub: { fontSize: FONT.xs, color: C.dim, marginTop: 2 },
   rowBtnChev: { fontSize: FONT.lg, color: C.dim },
   appVersion: { marginTop: 16, fontSize: FONT.xs, color: C.dim, opacity: 0.6 },
+});
+
+// ─── Styles: toggle "Tạo mới / Ghép vào hub" trong AddDeviceInline ───────────
+const adm = StyleSheet.create({
+  modeRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  modeBtn: {
+    flex: 1, paddingVertical: 8, borderRadius: RADIUS.md,
+    borderWidth: 1, borderColor: C.border, backgroundColor: C.panel2,
+    alignItems: 'center', cursor: 'pointer',
+  },
+  modeBtnActive: { backgroundColor: C.accentDim, borderColor: C.accent },
+  modeBtnText: { fontSize: FONT.xs, fontWeight: '600', color: C.dim },
+  modeBtnTextActive: { color: C.accentText },
+  emptyHubText: { fontSize: FONT.sm, color: C.dim, marginBottom: 10 },
+  hubList: { maxHeight: 160, marginBottom: 10 },
+  hubItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: 10, borderRadius: RADIUS.md, borderWidth: 1, borderColor: C.border,
+    backgroundColor: C.panel, marginBottom: 6, cursor: 'pointer',
+  },
+  hubItemActive: { borderColor: C.accent, backgroundColor: C.accentDim },
+  hubName: { fontSize: FONT.sm, fontWeight: '600', color: C.text },
+  hubMeta: { fontSize: FONT.xs, color: C.dim, marginTop: 1 },
+});
+
+// ─── Styles: Panel thông tin hội thoại bên phải (members / leave / media) ────
+const rpnl = StyleSheet.create({
+  container: { width: 320, borderLeftWidth: 1, borderLeftColor: C.border, backgroundColor: C.panel, flexDirection: 'column' },
+  header: {
+    height: 72, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    borderBottomWidth: 1, borderBottomColor: C.border,
+  },
+  headerTitle: { fontSize: FONT.lg, fontWeight: '700', color: C.text },
+  tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: C.border },
+  tabBtn: { flex: 1, paddingVertical: 12, alignItems: 'center', cursor: 'pointer' },
+  tabBtnActive: { borderBottomWidth: 2, borderBottomColor: C.accent },
+  tabText: { fontSize: FONT.sm, color: C.dim, fontWeight: '600' },
+  tabTextActive: { color: C.accentText },
+
+  addMemberBtn: {
+    margin: 12, padding: 10, borderRadius: RADIUS.md,
+    backgroundColor: C.accentDim, alignItems: 'center', cursor: 'pointer',
+  },
+  addMemberText: { color: C.accentText, fontWeight: '700', fontSize: FONT.sm },
+
+  memberRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 8,
+  },
+  memberName: { fontSize: FONT.sm, color: C.text, fontWeight: '600' },
+  adminTag: { fontSize: FONT.xs, color: C.accentText, marginTop: 1 },
+
+  leaveBtn: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6,
+    margin: 14, padding: 12, borderRadius: RADIUS.md,
+    backgroundColor: '#FFFBFB', borderWidth: 1, borderColor: '#FECACA',
+    cursor: 'pointer',
+  },
+  leaveText: { color: C.danger, fontWeight: '700', fontSize: FONT.sm },
+
+  mediaSubTabs: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingTop: 10 },
+  mediaSubBtn: {
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: RADIUS.full,
+    backgroundColor: C.panel2, cursor: 'pointer',
+  },
+  mediaSubBtnActive: { backgroundColor: C.accent },
+  mediaSubText: { fontSize: FONT.xs, fontWeight: '600', color: C.dim },
+  mediaSubTextActive: { color: C.white },
+
+  imageGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, padding: 12 },
+  imageThumb: { width: 88, height: 88, borderRadius: RADIUS.sm, backgroundColor: C.panel2 },
+
+  mediaFileRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.borderLight,
+  },
+  mediaFileIcon: {
+    width: 34, height: 34, borderRadius: 8, backgroundColor: C.accentDim,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  mediaFileName: { fontSize: FONT.sm, color: C.text, fontWeight: '600' },
+  mediaFileMeta: { fontSize: FONT.xs, color: C.dim, marginTop: 1 },
+
+  mediaLinkRow: { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.borderLight },
+  mediaLinkUrl: { fontSize: FONT.sm, color: C.accentText, fontWeight: '600' },
+  mediaLinkMeta: { fontSize: FONT.xs, color: C.dim, marginTop: 2 },
+
+  emptyMedia: { padding: 30, alignItems: 'center' },
+  emptyMediaText: { fontSize: FONT.sm, color: C.dim, marginTop: 8 },
+});
+
+// ─── Styles: Inline "Thêm thành viên/thiết bị" trong RightPanel ─────────────
+const am = StyleSheet.create({
+  overlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'center', alignItems: 'center', zIndex: 50,
+  },
+  card: {
+    width: 340, maxHeight: 480, backgroundColor: C.panel, borderRadius: RADIUS.lg,
+    borderWidth: 1, borderColor: C.border, ...SHADOW.md, padding: 16, overflow: 'hidden',
+  },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  title: { fontSize: FONT.lg, fontWeight: '700', color: C.text },
+  close: { fontSize: 18, color: C.dim, cursor: 'pointer' },
+  sectionLabel: { fontSize: FONT.xs, fontWeight: '700', color: C.dim, marginTop: 10, marginBottom: 6, letterSpacing: 0.5 },
+  searchInput: {
+    backgroundColor: C.panel2, borderRadius: RADIUS.md, paddingHorizontal: 12, paddingVertical: 9,
+    fontSize: FONT.sm, color: C.text, borderWidth: 1, borderColor: C.border, outlineWidth: 0,
+  },
+  list: { maxHeight: 140 },
+  optionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 7, paddingHorizontal: 4, cursor: 'pointer',
+  },
+  optionName: { fontSize: FONT.sm, color: C.text, fontWeight: '600' },
+  checkbox: {
+    width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: C.border,
+    justifyContent: 'center', alignItems: 'center', backgroundColor: C.panel,
+  },
+  checkboxOn: { backgroundColor: C.accent, borderColor: C.accent },
+  submitBtn: {
+    marginTop: 14, backgroundColor: C.accent, borderRadius: RADIUS.md,
+    paddingVertical: 11, alignItems: 'center', cursor: 'pointer',
+  },
+  submitBtnText: { color: C.white, fontWeight: '700', fontSize: FONT.sm },
+  disabled: { opacity: 0.5 },
 });
