@@ -69,7 +69,7 @@ function Attachments({ attachments }) {
         const url = resolveFileUrl(att.url);
         if (isImage) {
           return (
-            <TouchableOpacity key={i} onPress={() => Linking.openURL(url)} activeOpacity={0.9}>
+            <TouchableOpacity key={i} style={at.imageWrap} onPress={() => Linking.openURL(url)} activeOpacity={0.9}>
               <Image source={{ uri: url }} style={at.image} resizeMode="cover" />
             </TouchableOpacity>
           );
@@ -178,7 +178,7 @@ const s = StyleSheet.create({
   avatarPlaceholder: { width: 30, marginRight: 6 },
   content: { maxWidth: '75%' },
   senderName: { fontSize: FONT.xs, color: C.dim, marginBottom: 2, marginLeft: 4 },
-  bubble: { borderRadius: RADIUS.lg, paddingHorizontal: 12, paddingVertical: 8, ...SHADOW.sm, position: 'relative' },
+  bubble: { borderRadius: RADIUS.lg, paddingHorizontal: 12, paddingVertical: 8, ...SHADOW.sm, position: 'relative', outlineStyle: 'none' },
   bubbleMedia: { paddingHorizontal: 6, paddingVertical: 6 },
   bubbleIn: { backgroundColor: C.bubbleIn, borderBottomLeftRadius: RADIUS.sm, borderWidth: 1, borderColor: C.border },
   bubbleMine: { backgroundColor: C.bubbleOut, borderBottomRightRadius: RADIUS.sm },
@@ -199,6 +199,7 @@ const s = StyleSheet.create({
     backgroundColor: C.panel, borderWidth: 1, borderColor: C.border,
     justifyContent: 'center', alignItems: 'center',
     opacity: 0.65, cursor: 'pointer',
+    outlineStyle: 'none',
   },
   replyBtnRight: { right: -32 },
   replyBtnLeft: { left: -32 },
@@ -218,11 +219,13 @@ const rp = StyleSheet.create({
 });
 
 const at = StyleSheet.create({
-  image: { width: 220, height: 160, borderRadius: RADIUS.md, backgroundColor: C.panel2 },
+  imageWrap: { outlineStyle: 'none' },
+  image: { width: 220, height: 160, borderRadius: RADIUS.md, backgroundColor: C.panel2, outlineStyle: 'none' },
   fileRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: C.panel2, borderRadius: RADIUS.md,
     paddingHorizontal: 10, paddingVertical: 8, minWidth: 200,
+    outlineStyle: 'none',
   },
   fileIcon: {
     width: 32, height: 32, borderRadius: 8, backgroundColor: C.accentDim,

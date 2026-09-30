@@ -11,7 +11,7 @@ const ICONS = {
 
   // Auth
   'mail-outline':        '✉',
-  'lock-closed-outline': '🔒',
+  'lock-closed-outline': '🔒︎',
   'person-outline':      '👤',
   'eye-outline':         '👁',
   'eye-off-outline':     '🙈',
@@ -44,8 +44,8 @@ const ICONS = {
   'image-outline':        '🖼',
   'happy-outline':        '😊',
   'people-outline':       '👥',
-  'exit-outline':         '🚪',
-  'link-outline':         '🔗',
+  'exit-outline':         '➜]',
+  'link-outline':         '☍',
   'folder-outline':       '🗂',
   'information-circle-outline': 'ℹ',
   'trash-outline':        '🗑',

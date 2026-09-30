@@ -83,7 +83,7 @@ export function useMessages(conversationId) {
     }
   };
 
-  // Lang nghe socket event: nhan tin, thu hoi, xoa
+  // Lang nghe socket event: nhan tin, thu hoi, xoa, LOI
   useEffect(() => {
     if (!socket) return;
 
@@ -96,14 +96,22 @@ export function useMessages(conversationId) {
       setMessages((prev) => prev.map((m) => m._id === messageId ? { ...m, isRecalled: true } : m));
     const onDeleted = ({ messageId }) =>
       setMessages((prev) => prev.filter((m) => m._id !== messageId));
+    // Backend emit 'error_message' khi Message.create() that bai - truoc day khong ai lang nghe
+    // nen loi bi nuot hoan toan, khong hien gi ca.
+    const onError = (err) => {
+      console.error('Socket error_message:', err);
+      Alert.alert('Lỗi', err?.message || 'Gửi tin nhắn thất bại');
+    };
 
     socket.on('receive_message', onReceive);
     socket.on('message_recalled', onRecalled);
     socket.on('message_deleted', onDeleted);
+    socket.on('error_message', onError);
     return () => {
       socket.off('receive_message', onReceive);
       socket.off('message_recalled', onRecalled);
       socket.off('message_deleted', onDeleted);
+      socket.off('error_message', onError);
     };
   }, [socket, conversationId]);
 

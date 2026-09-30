@@ -213,3 +213,104 @@ export const removeMember = async (req, res) => {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
+export const setDeviceCommand = async (req, res) => {
+  try {
+    const { outputId, state } = req.body;
+ 
+    if (typeof outputId !== 'string' || !outputId.trim()) {
+      return res.status(400).json({ message: 'Thieu outputId' });
+    }
+    if (typeof state !== 'boolean') {
+      return res.status(400).json({ message: 'state phai la true hoac false' });
+    }
+ 
+    const device = await Device.findById(req.params.id);
+    if (!device) {
+      return res.status(404).json({ message: 'Khong tim thay thiet bi' });
+    }
+ 
+    // Chi chu so huu moi duoc dieu khien
+    if (device.owner && device.owner.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Khong co quyen dieu khien thiet bi nay' });
+    }
+ 
+    // outputId phai ton tai tren thiet bi, neu khong ESP32 se bo qua lenh
+    const output = device.outputs.find((o) => o.outputId === outputId);
+    if (!output) {
+      return res.status(400).json({
+        message: `Thiet bi khong co dau ra '${outputId}'`,
+        available: device.outputs.map((o) => o.outputId),
+      });
+    }
+ 
+    // Moi dau ra chi giu MOT lenh moi nhat. Nguoi dung bam lien tuc
+    // thi chi lenh cuoi cung co hieu luc, khong don thanh hang doi dai.
+    device.pendingCommands = device.pendingCommands.filter(
+      (c) => c.outputId !== outputId
+    );
+    device.pendingCommands.push({ outputId, state, createdAt: new Date() });
+ 
+    await device.save();
+ 
+    res.json({
+      message: 'Da gui lenh, thiet bi se thuc thi trong vai giay',
+      outputId,
+      state,
+      label: output.label,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+ 
+/**
+ * ESP32 poll dinh ky de lay cac lenh dang cho; lay xong thi clear.
+ * Route: GET /api/devices/:id/command   (middleware: deviceAuth - X-Device-Key)
+ * Tra  : { commands: [ { outputId, state } ] }
+ */
+export const getDeviceCommand = async (req, res) => {
+  try {
+    // deviceAuth gan req.device sau khi so khop X-Device-Key
+    const device = req.device;
+    if (!device) {
+      return res.status(401).json({ message: 'Thiet bi chua duoc xac thuc' });
+    }
+ 
+    const commands = device.pendingCommands.map((c) => ({
+      outputId: c.outputId,
+      state: c.state,
+    }));
+ 
+    if (commands.length > 0) {
+      device.pendingCommands = [];
+    }
+ 
+    // Dung chinh lan poll nay lam heartbeat
+    device.lastSeenAt = new Date();
+    await device.save();
+ 
+    res.json({ commands });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+ 
+/**
+ * App doi chieu trang thai thuc sau khi gui lenh.
+ * Route: GET /api/devices/:id   (middleware: protect - JWT)
+ * Bo qua ham nay neu backend da co route lay mot thiet bi.
+ */
+export const getDeviceById = async (req, res) => {
+  try {
+    const device = await Device.findById(req.params.id).select('-apiKeyHash');
+    if (!device) {
+      return res.status(404).json({ message: 'Khong tim thay thiet bi' });
+    }
+    if (device.owner && device.owner.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Khong co quyen xem thiet bi nay' });
+    }
+    res.json(device);
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};

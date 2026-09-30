@@ -4,7 +4,7 @@ const messageSchema = new mongoose.Schema(
   {
     conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
     senderId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    content: { type: String, required: true },
+    content: { type: String, default: '' }, 
     // 'text' cho nguoi-nguoi, 'device_event'/'device_telemetry' danh cho sau nay khi tich hop thiet bi nhung
     type: { type: String, enum: ['text', 'image', 'file', 'device_event', 'device_telemetry'], default: 'text' },
     attachments: [
@@ -12,6 +12,7 @@ const messageSchema = new mongoose.Schema(
         url: String,
         fileType: String,
         fileName: String,
+        fileSize: Number,
       },
     ],
     replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Message', default: null },

@@ -327,7 +327,13 @@ function Sidebar({ me, activeConvId, onSelectConv, unreadMap }) {
           const unread = unreadMap[item._id] || 0;
           const lastContent = item.lastMessage?.isRecalled
             ? 'Tin nhắn đã thu hồi'
-            : (item.lastMessage?.content || 'Chưa có tin nhắn');
+            : item.lastMessage?.content
+              ? item.lastMessage.content
+              : item.lastMessage?.attachments?.length
+                ? (item.lastMessage.attachments[0].fileType?.startsWith('image/') ? '📷 Hình ảnh' : `📎 ${item.lastMessage.attachments[0].fileName || 'Tệp đính kèm'}`)
+                : item.lastMessage
+                  ? ''
+                  : 'Chưa có tin nhắn';
           const time = item.lastMessage
             ? new Date(item.lastMessage.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
             : '';
@@ -648,7 +654,7 @@ function ProfilePanel({ me, onLogout }) {
               onPress={handleLogoutAll}
               disabled={loggingOutAll}
             >
-              <Text style={p.rowBtnIcon}>🚪</Text>
+              <Text style={p.rowBtnIcon}>➜]</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[p.rowBtnText, { color: C.danger }]}>Đăng xuất tất cả thiết bị</Text>
                 <Text style={p.rowBtnSub}>Hủy mọi phiên đăng nhập hiện tại</Text>

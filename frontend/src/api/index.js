@@ -97,9 +97,12 @@ export const deviceApi = {
   addDeviceMember: (deviceId, otherDeviceId) =>
     client.post(`/api/devices/${deviceId}/members`, { deviceId: otherDeviceId }),
   removeMember: (deviceId, userId) => client.delete(`/api/devices/${deviceId}/members/${userId}`),
+  sendCommand: (deviceId, command) =>
+    axiosInstance.patch(`/devices/${deviceId}/command`, { command }),
 };
 
 // ─── SYNC ────────────────────────────────────────────────────────────────────
 export const syncApi = {
   sync: (since) => client.get(`/api/sync?since=${encodeURIComponent(since)}`),
 };
+

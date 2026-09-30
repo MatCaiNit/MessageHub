@@ -8,9 +8,10 @@ export const uploadAttachment = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Khong co file duoc gui len' });
     const url = `/uploads/${req.file.filename}`;
+    const fixedOriginalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     res.status(201).json({
       url,
-      fileName: req.file.originalname,
+      fileName: fixedOriginalName,
       fileType: req.file.mimetype,
       fileSize: req.file.size,
     });

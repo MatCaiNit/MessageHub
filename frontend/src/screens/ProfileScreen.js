@@ -214,7 +214,7 @@ export default function ProfileScreen() {
             onPress={confirmLogoutAll}
             disabled={loggingOutAll}
           >
-            <Text style={s.rowBtnIcon}>🚪</Text>
+            <Text style={s.rowBtnIcon}>➜]</Text>
             <View style={{ flex: 1 }}>
               <Text style={[s.rowBtnText, { color: C.danger }]}>Đăng xuất tất cả thiết bị</Text>
               <Text style={s.rowBtnSub}>Hủy mọi phiên đăng nhập hiện tại</Text>
