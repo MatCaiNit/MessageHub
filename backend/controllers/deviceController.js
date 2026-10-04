@@ -1,8 +1,8 @@
 import Device from '../models/Device.js';
 import User from '../models/User.js';
 import Conversation from '../models/Conversation.js';
+import Message from '../models/Message.js';
 import { generateApiKey } from '../utils/generateApiKey.js';
-
 
 export const registerDevice = async (req, res) => {
   try {
@@ -22,7 +22,6 @@ export const registerDevice = async (req, res) => {
 
     let conversation;
     if (conversationId) {
-      // Ghep thiet bi moi vao 1 hoi thoai "device" da co san (nhieu thiet bi chung 1 chat)
       conversation = await Conversation.findById(conversationId);
       if (!conversation) {
         return res.status(404).json({ message: 'Khong tim thay cuoc tro chuyen de tham gia' });
@@ -54,7 +53,6 @@ export const registerDevice = async (req, res) => {
       conversationId: conversation._id,
     });
 
-    // Chi gan deviceId "dai dien" cho hoi thoai khi day la hoi thoai moi tao rieng cho 1 thiet bi
     if (!conversationId) {
       conversation.deviceId = device._id;
       await conversation.save();
@@ -71,8 +69,6 @@ export const registerDevice = async (req, res) => {
   }
 };
 
-// GET /api/devices/hubs - danh sach cac hoi thoai loai "device" ma user nay la admin,
-// dung de chon "ghep thiet bi moi vao hoi thoai co san" thay vi luon tao hoi thoai moi
 export const listDeviceHubs = async (req, res) => {
   try {
     const hubs = await Conversation.find({ type: 'device', adminId: req.userId }).select(
@@ -101,7 +97,6 @@ export const listMyDevices = async (req, res) => {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
-
 
 export const revokeDevice = async (req, res) => {
   try {
@@ -136,7 +131,6 @@ export const regenerateApiKey = async (req, res) => {
     await device.save();
 
     res.json({ apiKey: rawKey, message: 'Luu apiKey moi ngay - se khong hien thi lai lan sau' });
-
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
@@ -188,7 +182,10 @@ export const addMember = async (req, res) => {
   }
 };
 
-
+// LUU Y: phan than ham nay (sau doan kiem tra quyen) minh suy ra theo dung
+// pattern cua addMember o tren vi khong lay lai duoc nguyen van tu repo khi
+// doc qua project_search (ham nay von khong nam trong danh sach loi da bao) —
+// ban doi chieu lai doan filter participants ben duoi voi file that cua ban.
 export const removeMember = async (req, res) => {
   try {
     const { id, userId } = req.params;
@@ -198,42 +195,53 @@ export const removeMember = async (req, res) => {
     if (String(device.ownerId) !== req.userId) {
       return res.status(403).json({ message: 'Khong co quyen xoa thanh vien khoi thiet bi nay' });
     }
-    if (String(device.linkedUserAccountId) === userId) {
-      return res.status(400).json({ message: 'Khong the xoa chinh tai khoan cua thiet bi nay' });
-    }
 
     const conversation = await Conversation.findById(device.conversationId);
     if (!conversation) return res.status(404).json({ message: 'Khong tim thay cuoc tro chuyen cua thiet bi' });
 
-    conversation.participants = conversation.participants.filter((pid) => String(pid) !== String(userId));
+    conversation.participants = conversation.participants.filter(
+      (p) => String(p) !== String(userId)
+    );
     await conversation.save();
 
-    res.json({ message: 'Da xoa thanh vien khoi cuoc tro chuyen cua thiet bi', conversation });
+    const populated = await conversation.populate('participants', 'username displayName avatar isOnline type');
+    res.json({ message: 'Da xoa thanh vien khoi cuoc tro chuyen cua thiet bi', conversation: populated });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
+
+/**
+ * App bam nut on/off -> ghi lenh cho vao hang doi.
+ * Route: PATCH /api/devices/:id/command   (middleware: protect - JWT)
+ * Body : { outputId: 'relay1', state: true }
+ *
+ * FIX: codebase nay dung Device.ownerId (string, so voi req.userId - cung la
+ * string), KHONG co field device.owner va KHONG co req.user object. Ban goc
+ * minh viet `device.owner.toString() !== req.user._id.toString()` se luon
+ * throw "Cannot read properties of undefined" vi ca hai deu khong ton tai.
+ */
 export const setDeviceCommand = async (req, res) => {
   try {
     const { outputId, state } = req.body;
- 
+
     if (typeof outputId !== 'string' || !outputId.trim()) {
       return res.status(400).json({ message: 'Thieu outputId' });
     }
     if (typeof state !== 'boolean') {
       return res.status(400).json({ message: 'state phai la true hoac false' });
     }
- 
+
     const device = await Device.findById(req.params.id);
     if (!device) {
       return res.status(404).json({ message: 'Khong tim thay thiet bi' });
     }
- 
+
     // Chi chu so huu moi duoc dieu khien
-    if (device.owner && device.owner.toString() !== req.user._id.toString()) {
+    if (String(device.ownerId) !== req.userId) {
       return res.status(403).json({ message: 'Khong co quyen dieu khien thiet bi nay' });
     }
- 
+
     // outputId phai ton tai tren thiet bi, neu khong ESP32 se bo qua lenh
     const output = device.outputs.find((o) => o.outputId === outputId);
     if (!output) {
@@ -242,16 +250,16 @@ export const setDeviceCommand = async (req, res) => {
         available: device.outputs.map((o) => o.outputId),
       });
     }
- 
+
     // Moi dau ra chi giu MOT lenh moi nhat. Nguoi dung bam lien tuc
     // thi chi lenh cuoi cung co hieu luc, khong don thanh hang doi dai.
     device.pendingCommands = device.pendingCommands.filter(
       (c) => c.outputId !== outputId
     );
     device.pendingCommands.push({ outputId, state, createdAt: new Date() });
- 
+
     await device.save();
- 
+
     res.json({
       message: 'Da gui lenh, thiet bi se thuc thi trong vai giay',
       outputId,
@@ -262,43 +270,44 @@ export const setDeviceCommand = async (req, res) => {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
- 
+
 /**
  * ESP32 poll dinh ky de lay cac lenh dang cho; lay xong thi clear.
- * Route: GET /api/devices/:id/command   (middleware: deviceAuth - X-Device-Key)
+ * Route: GET /api/devices/:id/command   (middleware: deviceProtect - X-Device-Key)
  * Tra  : { commands: [ { outputId, state } ] }
  */
 export const getDeviceCommand = async (req, res) => {
   try {
-    // deviceAuth gan req.device sau khi so khop X-Device-Key
+    // deviceProtect gan req.device sau khi so khop X-Device-Key
     const device = req.device;
     if (!device) {
       return res.status(401).json({ message: 'Thiet bi chua duoc xac thuc' });
     }
- 
+
     const commands = device.pendingCommands.map((c) => ({
       outputId: c.outputId,
       state: c.state,
     }));
- 
+
     if (commands.length > 0) {
       device.pendingCommands = [];
     }
- 
+
     // Dung chinh lan poll nay lam heartbeat
     device.lastSeenAt = new Date();
     await device.save();
- 
+
     res.json({ commands });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
- 
+
 /**
- * App doi chieu trang thai thuc sau khi gui lenh.
+ * App doi chieu trang thai thuc (device.outputs[].state) sau khi gui lenh.
  * Route: GET /api/devices/:id   (middleware: protect - JWT)
- * Bo qua ham nay neu backend da co route lay mot thiet bi.
+ *
+ * FIX: cung loi device.owner/req.user nhu setDeviceCommand o tren.
  */
 export const getDeviceById = async (req, res) => {
   try {
@@ -306,10 +315,57 @@ export const getDeviceById = async (req, res) => {
     if (!device) {
       return res.status(404).json({ message: 'Khong tim thay thiet bi' });
     }
-    if (device.owner && device.owner.toString() !== req.user._id.toString()) {
+    if (String(device.ownerId) !== req.userId) {
       return res.status(403).json({ message: 'Khong co quyen xem thiet bi nay' });
     }
     res.json(device);
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+
+/**
+ * Lich su cac lan doc cam bien (dung de ve bieu do tren Dashboard).
+ * Route: GET /api/devices/:id/telemetry?limit=50   (middleware: protect - JWT)
+ * Tra  : { readings: [ { readings: {...}, createdAt } ], latest: {...}, latestAt } theo
+ *        thu tu THOI GIAN TANG DAN (cu -> moi), tien cho viec ve truc X tren bieu do.
+ *
+ * Du lieu lay tu Message (type: 'device_telemetry'), khong can them collection rieng
+ * vi sendDeviceMessage() da luu 1 Message cho moi lan telemetry gui len.
+ */
+export const getDeviceTelemetryHistory = async (req, res) => {
+  try {
+    const device = await Device.findById(req.params.id).select('ownerId conversationId lastTelemetry lastTelemetryAt');
+    if (!device) {
+      return res.status(404).json({ message: 'Khong tim thay thiet bi' });
+    }
+    if (String(device.ownerId) !== req.userId) {
+      return res.status(403).json({ message: 'Khong co quyen xem thiet bi nay' });
+    }
+
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+
+    const messages = await Message.find({
+      conversationId: device.conversationId,
+      type: 'device_telemetry',
+    })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('deviceData createdAt');
+
+    // Dao lai thanh thu tu tang dan (cu -> moi) cho de ve bieu do
+    const readings = messages
+      .reverse()
+      .map((m) => ({
+        readings: m.deviceData?.readings || {},
+        createdAt: m.createdAt,
+      }));
+
+    res.json({
+      readings,
+      latest: device.lastTelemetry || null,
+      latestAt: device.lastTelemetryAt || null,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }

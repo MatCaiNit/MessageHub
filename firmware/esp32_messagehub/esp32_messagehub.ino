@@ -1,99 +1,50 @@
-/*
- * ============================================================
- *  MessageHub - ESP32 Firmware v4.0
- * ============================================================
- *  Khac v3.0: ho tro NHIEU thiet bi dau ra (LED, relay, buzzer...)
- *  thay vi chi mot LED. Moi dau ra co mot outputId, backend va app
- *  dieu khien theo id nay.
- *
- *  Chuc nang:
- *   1. PIR dem so lan chuyen dong
- *      - <= MOTION_THRESHOLD lan : chi dem, khong lam gi
- *      - >  MOTION_THRESHOLD lan : BAT dau ra MOTION_TARGET ngay
- *        tai ESP32, sau do POST thong bao cho backend
- *   2. Poll lenh on/off tu app cho BAT KY dau ra nao
- *   3. Nut bam vat ly toggle dau ra BUTTON_TARGET
- *
- *  Thu vien: WiFiManager (tzapu, tuy chon), ArduinoJson (bblanchon)
- * ============================================================
- */
-
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <DHT.h>      // Thu vien "DHT sensor library" cua Adafruit - can cai them
+                      // trong Library Manager (Sketch > Include Library > Manage
+                      // Libraries...), tim "DHT sensor library" by Adafruit. No
+                      // se tu doi hoi cai them "Adafruit Unified Sensor" - Arduino
+                      // IDE se hoi cai luon, cu Bam Install.
+#include "Output.h"   // FIX: struct Output phai nam trong header rieng, nap
+                      // truoc khi Arduino IDE tu sinh prototype cho cac ham
+                      // ben duoi - de trong cung 1 file .ino se bi loi
+                      // "Output does not name a type" nhu ban vua gap.
 
-// ------------------------------------------------------------
-//  CHON CHE DO KET NOI WIFI
-//  - Giu dong duoi day  : dung WiFiManager (captive portal)
-//  - Comment dong duoi  : dung SSID/password hard-code
-// ------------------------------------------------------------
-#define USE_WIFI_MANAGER
+//  CHÂN GPIO
+#define PIN_PIR      21   // PIR thực tế đang cắm ở D21
+#define PIN_BOOT_BTN 0
 
-#ifdef USE_WIFI_MANAGER
-  #include <WiFiManager.h>
-  const char* AP_NAME = "MessageHub-Setup";
-#else
-  const char* WIFI_SSID = "Ten_wifi";
-  const char* WIFI_PASS = "matkhau";
-#endif
+// ====================== CAM BIEN MOI: NHIET/AM/AM THANH/KHOANG CACH =====
+// Chon chan CHUA dung bang PIR(21)/BOOT(0)/LED(26) o tren.
+#define PIN_DHT       4    // DHT22 (AM2302) - chan DATA, can 1 tro 10k keo len 3.3V
+#define DHT_TYPE      DHT22
+#define PIN_SOUND     34   // KY-038/KY-037 - chan AO (analog). GPIO34 la chan
+                           // chi-doc (input-only) tren ESP32 nen rat hop de doc
+                           // cam bien, khong dung de dieu khien duoc.
+#define PIN_TRIG      5    // HC-SR04 - chan Trig (phat xung sieu am)
+#define PIN_ECHO      18   // HC-SR04 - chan Echo (nhan xung phan hoi)
+#define PIN_GAS       35   // MQ-2 - chan AO (analog). GPIO35 cung la chan
+                           // chi-doc (input-only) nhu GPIO34, hop de doc cam
+                           // bien ma khong dung de dieu khien duoc.
 
-// ====================== DANH SACH DAU RA ===================
-/*
- *  Them thiet bi = them mot dong vao mang nay.
- *  - id        : phai KHOP voi outputId trong Device.outputs tren backend
- *  - pin       : GPIO dieu khien
- *  - activeLow : true neu thiet bi bat khi chan xuong LOW
- *                (phan lon relay module 1 kenh la active-LOW)
- */
-struct Output {
-  const char* id;
-  uint8_t     pin;
-  bool        activeLow;
-  bool        state;
-};
+DHT dht(PIN_DHT, DHT_TYPE);
 
+#define TELEMETRY_INTERVAL_MS 30000UL   // gui du lieu cam bien moi 30s
+unsigned long lastTelemetryAt = 0;
+// ==========================================================================
+
+// ====================== DAU RA DIEU KHIEN ON/OFF =============
 Output outputs[] = {
-  { "led",    26, false, false },   // LED bao trang thai, qua dien tro 220 ohm
-  { "relay1", 25, true,  false },   // Relay module -> den that
-  { "buzzer", 33, false, false },   // Con chip bao dong
+  { "led", 26, false, false },   // LED qua tro 220 ohm, da noi tren D26
 };
 const int OUTPUT_COUNT = sizeof(outputs) / sizeof(outputs[0]);
 
-// Dau ra nao bi tac dong boi cam bien / nut bam
-#define MOTION_TARGET      "led"
-#define BUTTON_TARGET      "led"
+#define COMMAND_POLL_MS 4000UL
+unsigned long lastCommandPoll = 0;
 
-// ====================== CAU HINH CHAN VAO ==================
-#define PIR_PIN            27      // chan OUT cua PIR HC-SR501
-#define BUTTON_PIN         14      // nut bam -> GND (INPUT_PULLUP)
-
-// ====================== CAU HINH LOGIC =====================
-#define MOTION_THRESHOLD   3       // > 3 lan moi bat MOTION_TARGET
-#define COUNT_WINDOW_MS    60000UL // cua so dem 60s, qua thi reset bo dem
-#define PIR_REARM_MS       5000UL  // PIR phai LOW lien tuc 5s moi cho dem lan ke
-#define POLL_INTERVAL_MS   4000UL  // chu ky hoi lenh tu backend
-#define DEBOUNCE_MS        50UL    // chong doi nut bam
-#define PIR_WARMUP_MS      30000UL // PIR can thoi gian on dinh sau khi cap nguon
-
-// ====================== CAU HINH BACKEND ===================
-const char* BACKEND_URL = "http://192.168.1.10:5000";  // doi thanh IP/domain backend
-const char* DEVICE_ID   = "PUT_DEVICE_MONGO_ID_HERE";  // _id cua Device trong MongoDB
-const char* DEVICE_KEY  = "PUT_DEVICE_KEY_HERE";       // key gui qua header X-Device-Key
-
-// ====================== TRANG THAI =========================
-int  motionCount = 0;
-unsigned long windowStart = 0;
-
-bool pirArmed = false;
-unsigned long pirLowSince = 0;
-
-unsigned long lastPoll = 0;
-
-bool lastButtonReading = HIGH;
-bool buttonStable      = HIGH;
-unsigned long lastDebounce = 0;
-
-// ====================== HAM DAU RA =========================
 Output* findOutput(const char* id) {
   if (!id) return nullptr;
   for (int i = 0; i < OUTPUT_COUNT; i++) {
@@ -105,127 +56,384 @@ Output* findOutput(const char* id) {
 void setOutput(Output* out, bool on) {
   if (!out) return;
   out->state = on;
-  bool level = out->activeLow ? !on : on;   // relay active-LOW thi dao muc
+  bool level = out->activeLow ? !on : on;
   digitalWrite(out->pin, level ? HIGH : LOW);
   Serial.printf("[OUT] %s -> %s\n", out->id, on ? "BAT" : "TAT");
 }
+// ===============================================================
 
-bool isOutputOn(const char* id) {
-  Output* out = findOutput(id);
-  return out ? out->state : false;
+const unsigned long PIR_LOW_STABLE   = 5000;
+const unsigned long PIR_MIN_INTERVAL = 10000;   // PIR_MIN_INTERVAL da la khoang cach toi thieu ~10s giua 2 lan phat hien
+#define DEBUG_PIR_STATE  true
+
+// ====================== MOI: CHUOI CHUYEN DONG 3 LAN LIEN TIEP ===
+// Phat hien 3 lan chuyen dong LIEN TIEP, moi lan cach lan truoc khong qua
+// MOTION_GAP_MAX_MS (~10-15s, PIR_MIN_INTERVAL o tren da dam bao toi thieu
+// 10s giua 2 lan) thi nhay LED + bao ve app. Neu lau hon MOTION_GAP_MAX_MS
+// ma khong co lan tiep theo thi coi nhu chuoi bi dut, dem lai tu dau -
+// khong bao gi ca neu chua du 3 lan.
+#define MOTION_SEQ_TARGET    3
+#define MOTION_GAP_MAX_MS    15000UL
+#define MOTION_BLINK_TARGET  "led"
+#define MOTION_BLINK_TIMES   5
+#define MOTION_BLINK_ON_MS   150
+#define MOTION_BLINK_OFF_MS  150
+
+int motionSeqCount = 0;
+unsigned long lastMotionAt = 0;
+// ===================================================================
+
+
+Preferences prefs;
+String apiKey   = "";
+String deviceId = "";     // _id thuc cua Device trong MongoDB, dung de poll lenh
+String deviceLabel = "";  // ten hien thi rieng cua board nay, VD "MessageHub-A4CF12"
+
+int  lastPirState        = LOW;
+unsigned long lastPirLowTime  = 0;
+unsigned long lastTriggerTime = 0;
+unsigned long lastDebugTime   = 0;
+bool armed = false;
+
+WiFiManager wm;
+
+// FIX: dat 2 ham nay SAU khi apiKey/deviceId da duoc khai bao o tren (2 bien
+// nay dung ben trong ham) - Arduino chi tu sinh prototype cho HAM, khong
+// giup gi voi thu tu khai bao BIEN toan cuc.
+const char* SERVER_BASE = "http://192.168.1.3:3000";
+String messageUrl() { return String(SERVER_BASE) + "/api/messages/device"; }
+String commandUrl() { return String(SERVER_BASE) + "/api/devices/" + deviceId + "/command"; }
+
+bool sendMessage(const char* content, const char* type, JsonDocument* deviceDataDoc = nullptr);
+void pollCommand();
+void sendTelemetry();
+float readDistanceCm();
+
+
+String getUniqueDeviceLabel() {
+  uint64_t chipId = ESP.getEfuseMac(); // MAC address duy nhat cua tung chip
+  char buf[32];
+  // Lay 6 hex cuoi cua chip id lam ma nhan dien ngan gon, de doc
+  snprintf(buf, sizeof(buf), "MessageHub-%04X",
+           (uint16_t)(chipId >> 32));
+  return String(buf);
 }
 
-// ====================== BAO CHO BACKEND ====================
-/*
- *  Gui kem trang thai TAT CA dau ra, de backend luu lai lam nguon
- *  su that cho app. Khong co buoc nay thi app chi doan trang thai.
- */
-void notifyApp(const char* eventType) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[HTTP] Bo qua notify - chua co WiFi");
-    return;
+
+// WIFI PROVISIONING
+void setupWiFiAndApiKey() {
+  deviceLabel = getUniqueDeviceLabel();
+  Serial.printf("[SETUP] Ten thiet bi (hotspot khi config): %s\n", deviceLabel.c_str());
+
+  // Namespace flash rieng theo tung chip -> nhieu board khong ghi de len nhau
+  // du dung chung 1 file code (moi board co Chip ID rieng)
+  prefs.begin("msghub", false);
+  apiKey   = prefs.getString("apikey", "");
+  deviceId = prefs.getString("deviceid", "");
+
+  // FIX: gioi han cu la 64 ky tu, nhung API key that (tien to "dvk_" + 64 ky
+  // tu hex) dai ~68 ky tu nen bi cat, khong nhap du duoc. Tang len 100.
+  WiFiManagerParameter customApiKey(
+      "apikey", "API Key (lay tu tab Thiet bi tren web MessageHub)",
+      apiKey.c_str(), 100);
+  wm.addParameter(&customApiKey);
+
+  // Device ID la ObjectId cua MongoDB (24 ky tu hex), tang len 40 cho du phong
+  WiFiManagerParameter customDeviceId(
+      "deviceid", "Device ID (cung xem o tab Thiet bi tren web MessageHub)",
+      deviceId.c_str(), 40);
+  wm.addParameter(&customDeviceId);
+
+  pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
+  if (digitalRead(PIN_BOOT_BTN) == LOW) {
+    Serial.println("[SETUP] Nut BOOT dang giu - xoa config cu");
+    wm.resetSettings();
+    prefs.remove("apikey");
+    prefs.remove("deviceid");
   }
 
-  HTTPClient http;
-  http.begin(String(BACKEND_URL) + "/api/devices/message");
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Device-Key", DEVICE_KEY);
+  wm.setConfigPortalTimeout(180);
 
-  StaticJsonDocument<512> doc;
-  doc["event"]       = eventType;
-  doc["motionCount"] = motionCount;
+  Serial.printf("[SETUP] Dang ket noi WiFi (hoac mo hotspot \"%s\" de config)...\n",
+                deviceLabel.c_str());
 
-  JsonArray arr = doc.createNestedArray("outputs");
+  // Ten hotspot = deviceLabel rieng cua tung board -> nhieu board
+  // bat cung luc se co ten khac nhau tren danh sach WiFi cua dien thoai
+  bool ok = wm.autoConnect(deviceLabel.c_str());
+
+  if (!ok) {
+    Serial.println("[SETUP] Khong ket noi duoc va het thoi gian cho config.");
+    delay(5000);
+    ESP.restart();
+  }
+
+  Serial.println("[SETUP] WiFi da ket noi!");
+  Serial.printf("[SETUP] IP: %s\n", WiFi.localIP().toString().c_str());
+
+  String enteredKey = String(customApiKey.getValue());
+  enteredKey.trim();
+  if (enteredKey.length() > 0) {
+    apiKey = enteredKey;
+    prefs.putString("apikey", apiKey);
+    Serial.println("[SETUP] Da luu API key vao flash");
+  }
+
+  String enteredDeviceId = String(customDeviceId.getValue());
+  enteredDeviceId.trim();
+  if (enteredDeviceId.length() > 0) {
+    deviceId = enteredDeviceId;
+    prefs.putString("deviceid", deviceId);
+    Serial.println("[SETUP] Da luu Device ID vao flash");
+  }
+
+  if (apiKey.length() == 0) {
+    Serial.println("[SETUP] ⚠ CHUA CO API KEY! Giu nut BOOT 3s de vao lai config.");
+  }
+  if (deviceId.length() == 0) {
+    Serial.println("[SETUP] ⚠ CHUA CO DEVICE ID! Se khong bat/tat duoc tu app cho toi khi nhap.");
+  }
+}
+
+
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("╔═════════════════════════════════════════════════╗");
+  Serial.println("║  MessageHub ESP32 - Multi-device Provisioning  ║");
+  Serial.println("╚═════════════════════════════════════════════════╝");
+
+  pinMode(PIN_PIR, INPUT);
+
   for (int i = 0; i < OUTPUT_COUNT; i++) {
-    JsonObject o = arr.createNestedObject();
-    o["outputId"] = outputs[i].id;
-    o["state"]    = outputs[i].state;
+    pinMode(outputs[i].pin, OUTPUT);
+    setOutput(&outputs[i], false);
   }
 
-  String payload;
-  serializeJson(doc, payload);
+  // Cam bien moi
+  dht.begin();
+  pinMode(PIN_TRIG, OUTPUT);
+  pinMode(PIN_ECHO, INPUT);
+  digitalWrite(PIN_TRIG, LOW);
 
-  int code = http.POST(payload);
-  Serial.printf("[HTTP] notify(%s) -> %d\n", eventType, code);
-  http.end();
+  setupWiFiAndApiKey();
+
+  Serial.println("[BOOT] PIR dang warm-up (60s)...");
+  unsigned long start = millis();
+  while (millis() - start < 60000) {
+    if (millis() - lastDebugTime > 5000) {
+      lastDebugTime = millis();
+      int p = digitalRead(PIN_PIR);
+      Serial.printf("[WARMUP] Con %lds - PIR = %s\n",
+                    (60000 - (millis() - start)) / 1000,
+                    p == HIGH ? "HIGH" : "LOW");
+    }
+    delay(100);
+  }
+  Serial.println("[BOOT] Warm-up xong");
+  lastPirState = digitalRead(PIN_PIR);
+  lastPirLowTime = millis();
+
+  if (apiKey.length() > 0) {
+    Serial.println("[BOOT] Gui tin chao server...");
+    char hello[128];
+    snprintf(hello, sizeof(hello),
+             "V %s da online — PIR san sang phat hien chuyen dong",
+             deviceLabel.c_str());
+
+    StaticJsonDocument<128> bootData;
+    bootData["event"] = "boot";
+    JsonArray arr = bootData.createNestedArray("outputs");
+    for (int i = 0; i < OUTPUT_COUNT; i++) {
+      JsonObject o = arr.createNestedObject();
+      o["outputId"] = outputs[i].id;
+      o["state"]    = outputs[i].state;
+    }
+
+    if (sendMessage(hello, "device_event", &bootData)) {
+      Serial.println("[BOOT] OK - firmware san sang!");
+    } else {
+      Serial.println("[BOOT] LOI - kiem tra API key + server URL + firewall");
+    }
+  } else {
+    Serial.println("[BOOT] Bo qua - chua co API key.");
+  }
 }
 
-// ============ DEM CHUYEN DONG -> TAC DUNG LEN DAU RA =======
+
+
+// Nhay dau ra `id` mot vai lan roi tra ve DUNG trang thai truoc do (khong
+// pha trang thai on/off nguoi dung dang dieu khien qua app).
+void blinkOutput(const char* id, int times, int onMs, int offMs) {
+  Output* out = findOutput(id);
+  if (!out) return;
+  bool prev = out->state;
+  for (int i = 0; i < times; i++) {
+    setOutput(out, true);
+    delay(onMs);
+    setOutput(out, false);
+    delay(offMs);
+  }
+  setOutput(out, prev);
+}
+
+// Goi moi khi PIR bat duoc 1 lan chuyen dong hop le (da qua debounce/re-arm
+// o loop() ben duoi). Chi hanh dong (nhay LED + bao app) khi du 3 lan LIEN
+// TIEP, cach nhau khong qua MOTION_GAP_MAX_MS - duoi 3 lan thi khong lam gi.
 void onMotionDetected() {
   unsigned long now = millis();
 
-  // Qua cua so thoi gian ma chua du nguong -> dem lai tu dau
-  if (motionCount > 0 && now - windowStart > COUNT_WINDOW_MS) {
-    Serial.println("[PIR] Het cua so dem, reset bo dem");
-    motionCount = 0;
+  if (lastMotionAt != 0 && (now - lastMotionAt) > MOTION_GAP_MAX_MS) {
+    // Qua lau ke tu lan truoc -> chuoi cu bi dut, tinh lai tu dau
+    Serial.println("[PIR] Chuoi bi dut (cach qua lau), dem lai tu dau");
+    motionSeqCount = 0;
   }
-  if (motionCount == 0) windowStart = now;
+  lastMotionAt = now;
+  motionSeqCount++;
 
-  motionCount++;
-  Serial.printf("[PIR] Chuyen dong lan %d (nguong %d)\n", motionCount, MOTION_THRESHOLD);
+  Serial.printf("[PIR] Chuyen dong lan %d/%d trong chuoi\n", motionSeqCount, MOTION_SEQ_TARGET);
 
-  // Duoi hoac bang nguong: chi dem, KHONG lam gi ca
-  if (motionCount <= MOTION_THRESHOLD) return;
+  if (motionSeqCount >= MOTION_SEQ_TARGET) {
+    Serial.println("[PIR] Du 3 lan lien tiep -> nhay LED + bao app");
+    blinkOutput(MOTION_BLINK_TARGET, MOTION_BLINK_TIMES, MOTION_BLINK_ON_MS, MOTION_BLINK_OFF_MS);
 
-  // Vuot nguong: bat dau ra muc tieu ngay tai ESP32, roi moi bao app
-  Output* target = findOutput(MOTION_TARGET);
-  if (target && !target->state) {
-    setOutput(target, true);
-    notifyApp("motion_threshold_exceeded");
+    StaticJsonDocument<128> data;
+    data["event"] = "motion_sequence_detected";
+    data["count"] = motionSeqCount;
+    sendMessage(" Phat hien chuyen dong 3 lan lien tiep!", "device_event", &data);
+
+    motionSeqCount = 0;   // reset, san sang cho chuoi tiep theo
   }
+  // Duoi 3 lan: chi dem trong Serial, KHONG nhay LED, KHONG bao app
 }
 
-void readPir() {
-  bool motion = digitalRead(PIR_PIN) == HIGH;
+
+// Do khoang cach bang HC-SR04 (cm). Tra ve -1 neu khong doc duoc (qua xa/loi).
+float readDistanceCm() {
+  digitalWrite(PIN_TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(PIN_TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(PIN_TRIG, LOW);
+
+  // timeout 25ms ~ toi da do duoc khoang 4m, du dung trong nha
+  long duration = pulseIn(PIN_ECHO, HIGH, 25000UL);
+  if (duration <= 0) return -1;
+  return duration * 0.0343f / 2.0f;   // van toc am thanh ~343 m/s
+}
+
+// Doc ca 4 cam bien roi gui 1 goi telemetry duy nhat len server.
+// Dung deviceData.readings de FE (Dashboard) doc va ve bieu do.
+void sendTelemetry() {
+  float temperature = dht.readTemperature();   // NaN neu doc loi
+  float humidity     = dht.readHumidity();     // NaN neu doc loi
+  int   soundRaw      = analogRead(PIN_SOUND); // 0-4095
+  float distanceCm     = readDistanceCm();      // -1 neu khong do duoc
+  int   gasRaw         = analogRead(PIN_GAS);   // 0-4095, MQ-2 (khi gas/khoi)
+
+  StaticJsonDocument<256> data;
+  data["event"] = "telemetry";
+  JsonObject readings = data.createNestedObject("readings");
+  if (!isnan(temperature)) readings["temperature"] = temperature;
+  if (!isnan(humidity))    readings["humidity"]    = humidity;
+  readings["soundLevel"] = soundRaw;
+  if (distanceCm >= 0)     readings["distanceCm"]  = distanceCm;
+  readings["gasLevel"]    = gasRaw;
+
+  char content[160];
+  snprintf(content, sizeof(content),
+           "Nhiet do %.1f°C, do am %.0f%%, am thanh %d, khoang cach %.0fcm, khi gas %d",
+           isnan(temperature) ? 0.0f : temperature,
+           isnan(humidity) ? 0.0f : humidity,
+           soundRaw,
+           distanceCm < 0 ? 0.0f : distanceCm,
+           gasRaw);
+
+  sendMessage(content, "device_telemetry", &data);
+}
+
+
+void loop() {
   unsigned long now = millis();
 
-  if (motion) {
-    pirLowSince = 0;
-    if (pirArmed) {
-      pirArmed = false;            // khoa lai, tranh dem don khi PIR giu HIGH
-      onMotionDetected();
+  static unsigned long bootHoldStart = 0;
+  if (digitalRead(PIN_BOOT_BTN) == LOW) {
+    if (bootHoldStart == 0) bootHoldStart = now;
+    if (now - bootHoldStart > 3000) {
+      Serial.println("[RESET] Xoa config, khoi dong lai portal");
+      wm.resetSettings();
+      prefs.remove("apikey");
+      prefs.remove("deviceid");
+      delay(500);
+      ESP.restart();
     }
   } else {
-    if (pirLowSince == 0) pirLowSince = now;
-    if (!pirArmed && now - pirLowSince >= PIR_REARM_MS) {
-      pirArmed = true;
-      Serial.println("[PIR] Re-arm");
+    bootHoldStart = 0;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    return;
+  }
+
+  if (apiKey.length() == 0) {
+    delay(500);
+    return;
+  }
+
+  pollCommand();
+
+  if (now - lastTelemetryAt >= TELEMETRY_INTERVAL_MS) {
+    lastTelemetryAt = now;
+    sendTelemetry();
+  }
+
+  int currentState = digitalRead(PIN_PIR);
+
+  if (DEBUG_PIR_STATE && (now - lastDebugTime > 3000)) {
+    lastDebugTime = now;
+    unsigned long lowSince = (currentState == LOW) ? (now - lastPirLowTime) : 0;
+    Serial.printf("[DEBUG] PIR = %s | armed = %s | LOW duoc %lums\n",
+                  currentState == HIGH ? "HIGH" : "LOW",
+                  armed ? "YES" : "NO", lowSince);
+  }
+
+  if (currentState == LOW) {
+    if (lastPirState == HIGH) lastPirLowTime = now;
+    if (!armed && (now - lastPirLowTime) >= PIR_LOW_STABLE) {
+      armed = true;
+      Serial.println("[PIR] ✓ Armed");
     }
   }
-}
 
-// ====================== NUT BAM ============================
-void checkButton() {
-  bool reading = digitalRead(BUTTON_PIN);
-
-  if (reading != lastButtonReading) lastDebounce = millis();
-
-  if (millis() - lastDebounce > DEBOUNCE_MS && reading != buttonStable) {
-    buttonStable = reading;
-    if (buttonStable == LOW) {     // canh xuong = vua nhan
-      Output* target = findOutput(BUTTON_TARGET);
-      if (target) {
-        setOutput(target, !target->state);
-        notifyApp("button_toggle");
-      }
-    }
+  if (currentState == HIGH && lastPirState == LOW
+      && armed && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
+    lastTriggerTime = now;
+    armed = false;
+    onMotionDetected();
   }
-  lastButtonReading = reading;
+
+  lastPirState = currentState;
+  delay(50);
 }
 
-// ============ POLL LENH ON/OFF TU APP ======================
+
+// ====================== POLL LENH ON/OFF TU APP ================
 /*
- *  Backend tra ve: { "commands": [ { "outputId": "relay1", "state": true }, ... ] }
- *  Mot lan poll co the nhan nhieu lenh cho nhieu dau ra khac nhau.
+ *  Backend tra ve: { "commands": [ { "outputId": "led", "state": true }, ... ] }
+ *  Can Device ID that (khong chi API key) vi route nay la
+ *  GET /api/devices/:id/command.
  */
 void pollCommand() {
-  if (millis() - lastPoll < POLL_INTERVAL_MS) return;
-  lastPoll = millis();
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (deviceId.length() == 0) return;               // chua nhap Device ID
+  if (millis() - lastCommandPoll < COMMAND_POLL_MS) return;
+  lastCommandPoll = millis();
 
   HTTPClient http;
-  http.begin(String(BACKEND_URL) + "/api/devices/" + DEVICE_ID + "/command");
-  http.addHeader("X-Device-Key", DEVICE_KEY);
+  http.begin(commandUrl());
+  http.addHeader("X-Device-Key", apiKey);
+  http.setTimeout(5000);
 
   int code = http.GET();
   bool applied = false;
@@ -234,94 +442,77 @@ void pollCommand() {
     StaticJsonDocument<512> doc;
     if (deserializeJson(doc, http.getString()) == DeserializationError::Ok) {
       JsonArray commands = doc["commands"].as<JsonArray>();
-
-      for (JsonObject c : commands) {
-        const char* outputId = c["outputId"];
-        bool wanted = c["state"];
+      for (JsonObject cmd : commands) {
+        const char* outputId = cmd["outputId"];
+        bool wanted = cmd["state"];
 
         Output* out = findOutput(outputId);
         if (!out) {
           Serial.printf("[CMD] Bo qua - khong co dau ra '%s'\n", outputId ? outputId : "?");
           continue;
         }
-        if (out->state == wanted) continue;   // da dung trang thai, khong lam gi
+        if (out->state == wanted) continue;
 
         setOutput(out, wanted);
         applied = true;
-
-        // Tat dau ra cua cam bien tu app = reset bo dem, bat chu ky moi
-        if (!wanted && strcmp(out->id, MOTION_TARGET) == 0) {
-          motionCount = 0;
-        }
       }
     }
+  } else if (code > 0) {
+    Serial.printf("[CMD] Poll loi - status %d\n", code);
   }
   http.end();
 
-  // Bao lai trang thai THUC sau khi thuc thi
-  if (applied) notifyApp("command_applied");
+  // Bao lai trang thai THUC sau khi thuc thi, de app doc duoc ngay
+  if (applied) {
+    StaticJsonDocument<128> data;
+    data["event"] = "command_applied";
+    JsonArray arr = data.createNestedArray("outputs");
+    for (int i = 0; i < OUTPUT_COUNT; i++) {
+      JsonObject o = arr.createNestedObject();
+      o["outputId"] = outputs[i].id;
+      o["state"]    = outputs[i].state;
+    }
+    sendMessage("Da cap nhat trang thai thiet bi", "device_event", &data);
+  }
 }
+// ================================================================
 
-// ====================== KET NOI WIFI =======================
-void connectWiFi() {
-#ifdef USE_WIFI_MANAGER
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);            // tu thoat portal sau 3 phut
-  if (!wm.autoConnect(AP_NAME)) {
-    Serial.println("[WiFi] Cau hinh that bai, khoi dong lai...");
-    ESP.restart();
+
+bool sendMessage(const char* content, const char* type, JsonDocument* deviceDataDoc) {
+  if (WiFi.status() != WL_CONNECTED || apiKey.length() == 0) return false;
+
+  HTTPClient http;
+  http.begin(messageUrl());
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-Key", apiKey);
+  http.setTimeout(5000);
+
+  StaticJsonDocument<384> doc;
+  doc["content"] = content;
+  doc["type"]    = type;
+  if (deviceDataDoc != nullptr) {
+    doc["deviceData"] = deviceDataDoc->as<JsonObject>();
   }
-#else
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("[WiFi] Dang ket noi");
+  String body;
+  serializeJson(doc, body);
 
-  unsigned long startAttempt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 20000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
+  Serial.print("[HTTP] POST body: ");
+  Serial.println(body);
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WiFi] That bai, khoi dong lai...");
-    ESP.restart();
-  }
-#endif
+  int code = http.POST(body);
+  bool ok = (code >= 200 && code < 300);
 
-  Serial.printf("[WiFi] Da ket noi: %s | IP: %s\n",
-                WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
-}
-
-// ====================== SETUP / LOOP =======================
-void setup() {
-  Serial.begin(115200);
-  delay(300);
-
-  pinMode(PIR_PIN, INPUT);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-
-  // Khoi tao moi dau ra ve trang thai TAT (ton trong activeLow)
-  for (int i = 0; i < OUTPUT_COUNT; i++) {
-    pinMode(outputs[i].pin, OUTPUT);
-    setOutput(&outputs[i], false);
+  if (ok) {
+    Serial.printf("[HTTP] OK (%d)\n", code);
+  } else {
+    Serial.printf("[HTTP] LOI - status %d\n", code);
+    if (code > 0) {
+      Serial.println(http.getString());
+    } else {
+      Serial.printf("[HTTP] Loi mang: %s\n", http.errorToString(code).c_str());
+    }
   }
 
-  Serial.printf("\n[BOOT] MessageHub ESP32 v4.0 - %d dau ra\n", OUTPUT_COUNT);
-
-  connectWiFi();
-
-  Serial.println("[PIR] Dang khoi dong cam bien, cho 30s on dinh...");
-  delay(PIR_WARMUP_MS);
-  pirArmed = true;
-  Serial.println("[PIR] San sang");
-
-  notifyApp("boot");   // bao trang thai ban dau cho backend
-}
-
-void loop() {
-  readPir();
-  checkButton();
-  pollCommand();
-  delay(20);
+  http.end();
+  return ok;
 }

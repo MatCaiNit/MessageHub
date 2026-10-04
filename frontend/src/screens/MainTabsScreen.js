@@ -3,14 +3,15 @@ import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ConversationListScreen from './ConversationListScreen';
 import DevicesScreen from './DevicesScreen';
+import DashboardScreen from './DashboardScreen';
 import ProfileScreen from './ProfileScreen';
 import { C, FONT, SHADOW } from '../utils/theme';
 
-// Cac tab chinh cua app. Icon dung emoji cho gon (dong bo voi utils/icons.js).
 const TABS = [
-  { id: 'chat',    label: 'Tin nhắn',  icon: '💬', screen: ConversationListScreen },
-  { id: 'devices', label: 'Thiết bị',  icon: '⚡', screen: DevicesScreen },
-  { id: 'profile', label: 'Cá nhân',   icon: '👤', screen: ProfileScreen },
+  { id: 'chat',      label: 'Tin nhắn',  icon: '💬', screen: ConversationListScreen },
+  { id: 'devices',   label: 'Thiết bị',  icon: '⚡', screen: DevicesScreen },
+  { id: 'dashboard', label: 'Dashboard', icon: '📊', screen: DashboardScreen },
+  { id: 'profile',   label: 'Cá nhân',   icon: '👤', screen: ProfileScreen },
 ];
 
 export default function MainTabsScreen(props) {

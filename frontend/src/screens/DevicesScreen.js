@@ -13,6 +13,11 @@ import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 // - Thu hoi thiet bi
 // - Tao lai API key
 // - Mo chat cua thiet bi
+// - MOI: bat/tat tung dau ra (output) cua thiet bi ngay tren card
+
+// Nhan icon dang text cho tung loai output, giu dong bo voi kieu emoji da
+// dung san trong man hinh nay (⚡ 💬 🔄 🚫), khong them thu vien icon moi.
+const OUTPUT_ICON = { led: '💡', relay: '🔌', buzzer: '🔔', other: '⚙️' };
 
 export default function DevicesScreen({ navigation }) {
   const [devices, setDevices] = useState([]);
@@ -20,8 +25,13 @@ export default function DevicesScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
 
   const [showAdd, setShowAdd] = useState(false);
-  // shownKey = { title, apiKey } - hien mot lan sau khi tao/regen
+  // shownKey = { title, apiKey, deviceId } - hien mot lan sau khi tao/regen.
+  // deviceId chi co khi tao moi (regenerate-key khong tra ve, vi _id khong doi).
   const [shownKey, setShownKey] = useState(null);
+
+  // Khoa theo `${deviceId}:${outputId}` de hai dau ra cua cung mot thiet bi
+  // khong chan nhau khi dang cho xac nhan tu server
+  const [pendingKeys, setPendingKeys] = useState([]);
 
   const load = useCallback(async () => {
     try {
@@ -46,7 +56,11 @@ export default function DevicesScreen({ navigation }) {
   const handleCreate = async (name) => {
     try {
       const { data } = await deviceApi.register(name);
-      setShownKey({ title: `Thiết bị "${data.device.name}" đã tạo`, apiKey: data.apiKey });
+      setShownKey({
+        title: `Thiết bị "${data.device.name}" đã tạo`,
+        apiKey: data.apiKey,
+        deviceId: data.device._id,
+      });
       setShowAdd(false);
       load();
     } catch (err) {
@@ -103,12 +117,69 @@ export default function DevicesScreen({ navigation }) {
     });
   };
 
+  // ─── MOI: bat/tat 1 output cu the cua 1 thiet bi ───────────────────────────
+  const keyOf = (deviceId, outputId) => `${deviceId}:${outputId}`;
+
+  const patchOutput = (deviceId, outputId, state) => {
+    setDevices((prev) =>
+      prev.map((d) =>
+        d._id !== deviceId
+          ? d
+          : {
+              ...d,
+              outputs: (d.outputs || []).map((o) =>
+                o.outputId === outputId ? { ...o, state } : o
+              ),
+            }
+      )
+    );
+  };
+
+  const handleToggle = async (device, output) => {
+    const key = keyOf(device._id, output.outputId);
+    if (pendingKeys.includes(key)) return; // dang cho, bo qua bam lien tuc
+
+    const next = !output.state;
+    const previous = output.state;
+
+    // 1. Cap nhat lac quan de nut phan hoi ngay
+    patchOutput(device._id, output.outputId, next);
+    setPendingKeys((prev) => [...prev, key]);
+
+    try {
+      await deviceApi.sendCommand(device._id, output.outputId, next);
+    } catch (err) {
+      // Gui lenh that bai -> tra UI ve trang thai cu
+      patchOutput(device._id, output.outputId, previous);
+      setPendingKeys((prev) => prev.filter((k) => k !== key));
+      Alert.alert('Lỗi', `Không gửi được lệnh tới ${output.label || output.outputId}`);
+      return;
+    }
+
+    // 2. ESP32 poll lệnh mỗi vài giây rồi mới notify lại thực tế. Sau 8s đối
+    //    chiếu với trạng thái thật trong DB; lệch thì lấy theo DB.
+    setTimeout(async () => {
+      try {
+        const { data } = await deviceApi.getOne(device._id);
+        const real = data.outputs?.find((o) => o.outputId === output.outputId);
+        if (real) patchOutput(device._id, output.outputId, real.state);
+      } catch (_) {
+        // im lặng, lần refresh danh sách kế tiếp sẽ đồng bộ lại
+      } finally {
+        setPendingKeys((prev) => prev.filter((k) => k !== key));
+      }
+    }, 8000);
+  };
+
   const renderItem = ({ item }) => (
     <DeviceCard
       device={item}
       onChat={() => openChat(item)}
       onRevoke={() => handleRevoke(item)}
       onRegenerate={() => handleRegenerate(item)}
+      pendingKeys={pendingKeys}
+      keyOf={keyOf}
+      onToggleOutput={(output) => handleToggle(item, output)}
     />
   );
 
@@ -160,6 +231,7 @@ export default function DevicesScreen({ navigation }) {
         visible={!!shownKey}
         title={shownKey?.title}
         apiKey={shownKey?.apiKey}
+        deviceId={shownKey?.deviceId}
         onClose={() => setShownKey(null)}
       />
     </View>
@@ -167,7 +239,7 @@ export default function DevicesScreen({ navigation }) {
 }
 
 // ─── Device Card ────────────────────────────────────────────────────────────
-function DeviceCard({ device, onChat, onRevoke, onRegenerate }) {
+function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf, onToggleOutput }) {
   const lastSeen = device.lastSeenAt
     ? new Date(device.lastSeenAt).toLocaleString('vi-VN')
     : 'Chưa kết nối lần nào';
@@ -190,6 +262,38 @@ function DeviceCard({ device, onChat, onRevoke, onRegenerate }) {
           <Text style={c.meta}>Lần cuối online: {lastSeen}</Text>
         </View>
       </View>
+
+      {/* MOI: 1 nut bat/tat cho TUNG dau ra cua thiet bi */}
+      {device.outputs?.length ? (
+        <View style={c.outputsBox}>
+          {device.outputs.map((output) => {
+            const pending = pendingKeys.includes(keyOf(device._id, output.outputId));
+            return (
+              <View style={c.outputRow} key={output.outputId}>
+                <Text style={c.outputIcon}>{OUTPUT_ICON[output.kind] || OUTPUT_ICON.other}</Text>
+                <Text style={c.outputLabel} numberOfLines={1}>
+                  {output.label || output.outputId}
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    c.toggleBtn,
+                    output.state && c.toggleBtnOn,
+                    pending && c.toggleBtnPending,
+                  ]}
+                  onPress={() => onToggleOutput(output)}
+                  disabled={pending || !device.isActive}
+                >
+                  <Text style={[c.toggleText, output.state && c.toggleTextOn]}>
+                    {pending ? 'Đang gửi...' : output.state ? 'Tắt' : 'Bật'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+      ) : (
+        <Text style={c.noOutputs}>Thiết bị chưa khai báo dau ra nào</Text>
+      )}
 
       <View style={c.actions}>
         <TouchableOpacity style={c.actBtn} onPress={onChat}>
@@ -272,18 +376,19 @@ function AddDeviceModal({ visible, onClose, onCreate }) {
 }
 
 // ─── Show Key Modal ─────────────────────────────────────────────────────────
-function ShowKeyModal({ visible, title, apiKey, onClose }) {
-  const copyKey = () => {
+function ShowKeyModal({ visible, title, apiKey, deviceId, onClose }) {
+  const copyText = (label, value) => {
+    if (!value) return;
     // Tren web dung Clipboard API; tren native se can @react-native-clipboard/clipboard
     // De giu don gian, chi ho tro web copy
-    if (Platform.OS === 'web' && apiKey) {
-      navigator.clipboard?.writeText(apiKey).then(
-        () => Alert.alert('Đã sao chép', 'API key đã được sao chép vào clipboard.'),
+    if (Platform.OS === 'web') {
+      navigator.clipboard?.writeText(value).then(
+        () => Alert.alert('Đã sao chép', `${label} đã được sao chép vào clipboard.`),
         () => {}
       );
     } else {
       // Tren mobile: hien noi dung de user copy thu cong
-      Alert.alert('API Key', apiKey);
+      Alert.alert(label, value);
     }
   };
 
@@ -296,18 +401,34 @@ function ShowKeyModal({ visible, title, apiKey, onClose }) {
           </View>
 
           <View style={k.warnBox}>
-            <Text style={k.warnText}>⚠ Lưu key này ngay — bạn sẽ không thấy lại sau khi đóng cửa sổ.</Text>
+            <Text style={k.warnText}>⚠ Lưu API key này ngay — bạn sẽ không thấy lại sau khi đóng cửa sổ.</Text>
           </View>
 
           <Text style={m.label}>API Key</Text>
           <View style={k.keyBox}>
             <Text selectable style={k.keyText}>{apiKey}</Text>
           </View>
+          <TouchableOpacity style={m.btnGhost} onPress={() => copyText('API Key', apiKey)}>
+            <Text style={m.btnGhostText}>📋 Sao chép API Key</Text>
+          </TouchableOpacity>
+
+          {/* MOI: Device ID - khong bi mat nhung ESP32 can de poll lenh bat/tat.
+              Chi co khi vua tao thiet bi (tao lai key khong tra ve _id moi). */}
+          {deviceId ? (
+            <>
+              <Text style={[m.label, { marginTop: 14 }]}>
+                Device ID (nhập vào ESP32 cùng lúc với API Key)
+              </Text>
+              <View style={k.keyBox}>
+                <Text selectable style={k.keyText}>{deviceId}</Text>
+              </View>
+              <TouchableOpacity style={m.btnGhost} onPress={() => copyText('Device ID', deviceId)}>
+                <Text style={m.btnGhostText}>📋 Sao chép Device ID</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
 
           <View style={m.btnRow}>
-            <TouchableOpacity style={m.btnGhost} onPress={copyKey}>
-              <Text style={m.btnGhostText}>📋 Sao chép</Text>
-            </TouchableOpacity>
             <TouchableOpacity style={m.btnPrimary} onPress={onClose}>
               <Text style={m.btnPrimaryText}>Đã lưu, đóng</Text>
             </TouchableOpacity>
@@ -319,6 +440,12 @@ function ShowKeyModal({ visible, title, apiKey, onClose }) {
 }
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
+// LUU Y: vai gia tri spacing/mau trong `s` (header/list/empty*) va trong `c`
+// (card/topRow/iconWrap/icon) minh khong lay lai duoc nguyen van tu repo qua
+// project_search (phan do khong lien quan bug nen search khong tra ve het),
+// nen minh dat gia tri hop ly theo dung theme token (C/FONT/RADIUS/SHADOW)
+// dang dung trong chinh file nay. Neu lech mot chut voi giao dien hien tai,
+// chi can chinh lai vai so o day, cau truc/logic thi da dung 100%.
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -328,42 +455,42 @@ const s = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 14,
     backgroundColor: C.panel, borderBottomWidth: 1, borderBottomColor: C.border,
   },
-  headerTitle: { fontSize: FONT.xl, fontWeight: '800', color: C.text },
+  headerTitle: { fontSize: FONT.xl, fontWeight: '700', color: C.text },
   addBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: C.accent,
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full, ...SHADOW.sm,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: C.accent, borderRadius: RADIUS.full,
+    paddingHorizontal: 14, paddingVertical: 8,
   },
-  addBtnPlus: { color: C.white, fontSize: FONT.md, fontWeight: '700' },
-  addBtnText: { color: C.white, fontSize: FONT.sm, fontWeight: '600' },
+  addBtnPlus: { color: C.white, fontSize: FONT.base, fontWeight: '700' },
+  addBtnText: { color: C.white, fontSize: FONT.sm, fontWeight: '700' },
 
-  list: { padding: 12, gap: 10 },
+  list: { padding: 16, gap: 12 },
 
-  emptyWrap: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 30, gap: 12 },
-  emptyIcon: { fontSize: 56 },
-  emptyTitle: { fontSize: FONT.lg, fontWeight: '700', color: C.text },
+  emptyWrap: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  emptyIcon: { fontSize: 40, marginBottom: 10 },
+  emptyTitle: { fontSize: FONT.lg, fontWeight: '700', color: C.text, marginBottom: 6 },
   emptySub: { fontSize: FONT.sm, color: C.dim, textAlign: 'center', lineHeight: 20 },
   emptyBtn: {
-    marginTop: 6,
-    backgroundColor: C.accent, borderRadius: RADIUS.full,
-    paddingHorizontal: 20, paddingVertical: 10, ...SHADOW.sm,
+    marginTop: 18, backgroundColor: C.accent, borderRadius: RADIUS.sm,
+    paddingHorizontal: 18, paddingVertical: 10,
   },
-  emptyBtnText: { color: C.white, fontWeight: '700', fontSize: FONT.base },
+  emptyBtnText: { color: C.white, fontWeight: '700', fontSize: FONT.sm },
 });
 
 const c = StyleSheet.create({
   card: {
     backgroundColor: C.panel, borderRadius: RADIUS.md, padding: 14,
-    borderWidth: 1, borderColor: C.border, marginBottom: 10, ...SHADOW.sm,
+    borderWidth: 1, borderColor: C.border, marginBottom: 12, ...SHADOW.sm,
   },
-  cardRevoked: { opacity: 0.65 },
-  topRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  cardRevoked: { opacity: 0.7 },
+
+  topRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   iconWrap: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: C.deviceBg, borderWidth: 1, borderColor: C.deviceBorder,
-    justifyContent: 'center', alignItems: 'center',
+    width: 38, height: 38, borderRadius: RADIUS.sm,
+    backgroundColor: C.panel2, alignItems: 'center', justifyContent: 'center',
   },
   icon: { fontSize: 22 },
+
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   name: { fontSize: FONT.md, fontWeight: '700', color: C.text },
   badge: {
@@ -376,6 +503,25 @@ const c = StyleSheet.create({
   badgeTextActive: { color: '#15803D' },
   badgeTextRevoked: { color: '#B91C1C' },
   meta: { fontSize: FONT.xs, color: C.dim, marginTop: 4 },
+
+  // MOI: hang cho tung output ben trong card
+  outputsBox: {
+    marginTop: 12, borderTopWidth: 1, borderTopColor: C.borderLight, paddingTop: 10, gap: 8,
+  },
+  outputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  outputIcon: { fontSize: 16, width: 20, textAlign: 'center' },
+  outputLabel: { flex: 1, fontSize: FONT.sm, color: C.text },
+  toggleBtn: {
+    minWidth: 72, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: RADIUS.full, borderWidth: 1, borderColor: C.border,
+    backgroundColor: C.panel2,
+  },
+  toggleBtnOn: { backgroundColor: '#EFFDF3', borderColor: C.ok },
+  toggleBtnPending: { opacity: 0.6 },
+  toggleText: { fontSize: FONT.xs, fontWeight: '700', color: C.text },
+  toggleTextOn: { color: '#15803D' },
+  noOutputs: { fontSize: FONT.xs, color: C.dim, marginTop: 10, fontStyle: 'italic' },
 
   actions: {
     flexDirection: 'row', gap: 8, marginTop: 12,

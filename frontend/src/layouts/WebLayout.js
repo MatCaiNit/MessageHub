@@ -15,6 +15,7 @@ import MessageBubble from '../components/MessageBubble';
 import TypingIndicator from '../components/TypingIndicator';
 import { Icon } from '../utils/icons';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
+import DashboardScreen from '../screens/DashboardScreen';
 
 // ─── Layout gốc ──────────────────────────────────────────────────────────────
 export default function WebLayout() {
@@ -151,6 +152,12 @@ export default function WebLayout() {
         </>
       )}
 
+      {tab === 'dashboard' && (
+        <View style={s.chatPanel}>
+          <DashboardScreen />
+        </View>
+      )}
+
       {tab === 'profile' && (
         <View style={s.profileWrap}>
           <ProfilePanel me={me} onLogout={logout} />
@@ -187,9 +194,10 @@ function playPingSound() {
 // ─── Rail dọc trái ───────────────────────────────────────────────────────────
 function Rail({ active, onChange, connected, me, unreadTotal }) {
   const items = [
-    { id: 'chat',    icon: '💬', label: 'Tin nhắn', badge: unreadTotal },
-    { id: 'devices', icon: '⚡', label: 'Thiết bị' },
-    { id: 'profile', icon: '👤', label: 'Cá nhân'  },
+    { id: 'chat',      icon: '💬', label: 'Tin nhắn',  badge: unreadTotal },
+    { id: 'devices',   icon: '⚡', label: 'Thiết bị' },
+    { id: 'dashboard', icon: '📊', label: 'Dashboard' },
+    { id: 'profile',   icon: '👤', label: 'Cá nhân'  },
   ];
 
   return (
@@ -379,6 +387,50 @@ function DevicesSidebar({ activeConvId, onSelectDevice }) {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [shownKey, setShownKey] = useState(null);
+  const [pendingKeys, setPendingKeys] = useState([]);
+
+const keyOf = (deviceId, outputId) => `${deviceId}:${outputId}`;
+
+const patchOutput = (deviceId, outputId, state) => {
+  setDevices((prev) =>
+    prev.map((d) =>
+      d._id !== deviceId
+        ? d
+        : { ...d, outputs: (d.outputs || []).map((o) => o.outputId === outputId ? { ...o, state } : o) }
+    )
+  );
+};
+
+const handleToggle = async (device, output) => {
+  const key = keyOf(device._id, output.outputId);
+  if (pendingKeys.includes(key)) return;
+
+  const next = !output.state;
+  const previous = output.state;
+
+  patchOutput(device._id, output.outputId, next);
+  setPendingKeys((prev) => [...prev, key]);
+
+  try {
+    await deviceApi.sendCommand(device._id, output.outputId, next);
+  } catch (err) {
+    patchOutput(device._id, output.outputId, previous);
+    setPendingKeys((prev) => prev.filter((k) => k !== key));
+    window.alert('Lỗi: Không gửi được lệnh tới ' + (output.label || output.outputId));
+    return;
+  }
+
+  setTimeout(async () => {
+    try {
+      const { data } = await deviceApi.getOne(device._id);
+      const real = data.outputs?.find((o) => o.outputId === output.outputId);
+      if (real) patchOutput(device._id, output.outputId, real.state);
+    } catch (_) {}
+    finally {
+      setPendingKeys((prev) => prev.filter((k) => k !== key));
+    }
+  }, 8000);
+};
 
   const load = useCallback(async () => {
     try {
@@ -394,15 +446,19 @@ function DevicesSidebar({ activeConvId, onSelectDevice }) {
   useEffect(() => { load(); }, [load]);
 
   const handleCreate = async (name, hubConversationId) => {
-    try {
-      const { data } = await deviceApi.register(name, hubConversationId);
-      setShownKey({ title: `Thiết bị "${data.device.name}" đã tạo`, apiKey: data.apiKey });
-      setShowAdd(false);
-      load();
-    } catch (err) {
-      window.alert('Lỗi: ' + (err.response?.data?.message || err.message));
-    }
-  };
+  try {
+    const { data } = await deviceApi.register(name, hubConversationId);
+    setShownKey({
+      title: `Thiết bị "${data.device.name}" đã tạo`,
+      apiKey: data.apiKey,
+      deviceId: data.device._id,
+    });
+    setShowAdd(false);
+    load();
+  } catch (err) {
+    window.alert('Lỗi: ' + (err.response?.data?.message || err.message));
+  }
+};
 
   const handleRevoke = async (device) => {
     if (!window.confirm(`Thu hồi "${device.name}"?\nThiết bị sẽ không gửi được tin nhắn nữa.`)) return;
@@ -447,48 +503,77 @@ function DevicesSidebar({ activeConvId, onSelectDevice }) {
       ) : (
         <ScrollView style={{ flex: 1 }}>
           {devices.map((d) => {
-            const isActive = (d.conversationId?._id || d.conversationId) === activeConvId;
-            const lastSeen = d.lastSeenAt
-              ? new Date(d.lastSeenAt).toLocaleString('vi-VN', {
-                  day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-                })
-              : 'Chưa kết nối';
+  const isActive = (d.conversationId?._id || d.conversationId) === activeConvId;
+  const lastSeen = d.lastSeenAt
+    ? new Date(d.lastSeenAt).toLocaleString('vi-VN', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      })
+    : 'Chưa kết nối';
 
+  return (
+    <View key={d._id} style={[ds.devItem, isActive && ds.devItemActive, !d.isActive && ds.devItemRevoked]}>
+      <TouchableOpacity style={ds.devMain} onPress={() => onSelectDevice(d)}>
+        <View style={ds.devIcon}>
+          <Text style={{ fontSize: 24 }}>⚡</Text>
+        </View>
+        <View style={{ flex: 1, overflow: 'hidden' }}>
+          <View style={ds.devNameRow}>
+            <Text style={[ds.devName, isActive && ds.devNameActive]} numberOfLines={1}>{d.name}</Text>
+            <View style={[ds.pill, d.isActive ? ds.pillOk : ds.pillOff]}>
+              <Text style={[ds.pillText, d.isActive ? ds.pillTextOk : ds.pillTextOff]}>
+                {d.isActive ? 'ON' : 'OFF'}
+              </Text>
+            </View>
+          </View>
+          <Text style={ds.devMeta}>{lastSeen}</Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* MOI: 1 nut bat/tat cho tung output cua thiet bi */}
+      {d.outputs?.length ? (
+        <View style={{ paddingHorizontal: 4, paddingBottom: 6, gap: 6 }}>
+          {d.outputs.map((output) => {
+            const pending = pendingKeys.includes(keyOf(d._id, output.outputId));
             return (
-              <View key={d._id} style={[ds.devItem, isActive && ds.devItemActive, !d.isActive && ds.devItemRevoked]}>
+              <View key={output.outputId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={{ flex: 1, fontSize: FONT.sm, color: C.text }} numberOfLines={1}>
+                  {output.label || output.outputId}
+                </Text>
                 <TouchableOpacity
-                  style={ds.devMain}
-                  onPress={() => onSelectDevice(d)}
+                  style={{
+                    minWidth: 64, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5,
+                    borderRadius: RADIUS.full, borderWidth: 1,
+                    borderColor: output.state ? C.ok : C.border,
+                    backgroundColor: output.state ? '#EFFDF3' : C.panel2,
+                    opacity: pending ? 0.6 : 1,
+                    cursor: 'pointer',
+                  }}
+                  onPress={() => handleToggle(d, output)}
+                  disabled={pending || !d.isActive}
                 >
-                  <View style={ds.devIcon}>
-                    <Text style={{ fontSize: 24 }}>⚡</Text>
-                  </View>
-                  <View style={{ flex: 1, overflow: 'hidden' }}>
-                    <View style={ds.devNameRow}>
-                      <Text style={[ds.devName, isActive && ds.devNameActive]} numberOfLines={1}>{d.name}</Text>
-                      <View style={[ds.pill, d.isActive ? ds.pillOk : ds.pillOff]}>
-                        <Text style={[ds.pillText, d.isActive ? ds.pillTextOk : ds.pillTextOff]}>
-                          {d.isActive ? 'ON' : 'OFF'}
-                        </Text>
-                      </View>
-                    </View>
-                    <Text style={ds.devMeta}>{lastSeen}</Text>
-                  </View>
+                  <Text style={{ fontSize: FONT.xs, fontWeight: '700', color: output.state ? '#15803D' : C.text }}>
+                    {pending ? '...' : output.state ? 'Tắt' : 'Bật'}
+                  </Text>
                 </TouchableOpacity>
-
-                <View style={ds.devActions}>
-                  <TouchableOpacity style={ds.actBtn} onPress={() => handleRegenerate(d)} title="Tạo lại key">
-                    <Text style={ds.actIcon}>Tạo lại</Text>
-                  </TouchableOpacity>
-                  {d.isActive && (
-                    <TouchableOpacity style={ds.actBtn} onPress={() => handleRevoke(d)} title="Thu hồi">
-                      <Text style={ds.actIcon}>Xóa</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
               </View>
             );
           })}
+        </View>
+      ) : null}
+
+      <View style={ds.devActions}>
+        <TouchableOpacity style={ds.actBtn} onPress={() => handleRegenerate(d)} title="Tạo lại key">
+          <Text style={ds.actIcon}>Tạo lại</Text>
+        </TouchableOpacity>
+        {d.isActive && (
+          <TouchableOpacity style={ds.actBtn} onPress={() => handleRevoke(d)} title="Thu hồi">
+            <Text style={ds.actIcon}>Xóa</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+})}
         </ScrollView>
       )}
 
@@ -834,10 +919,11 @@ function AddDeviceInline({ onClose, onCreate }) {
 }
 
 // ─── Inline: Hiện API key ───────────────────────────────────────────────────
-function ShowKeyInline({ title, apiKey, onClose }) {
-  const copy = () => {
-    navigator.clipboard?.writeText(apiKey).then(
-      () => window.alert('Đã sao chép API key vào clipboard'),
+function ShowKeyInline({ title, apiKey, deviceId, onClose }) {
+  const copy = (label, value) => {
+    if (!value) return;
+    navigator.clipboard?.writeText(value).then(
+      () => window.alert(`Đã sao chép ${label} vào clipboard`),
       () => {}
     );
   };
@@ -848,15 +934,37 @@ function ShowKeyInline({ title, apiKey, onClose }) {
         <TouchableOpacity onPress={onClose}><Text style={cg.close}>✕</Text></TouchableOpacity>
       </View>
       <View style={cg.warnBox}>
-        <Text style={cg.warnText}>⚠ Lưu key ngay — sẽ không hiện lại</Text>
+        <Text style={cg.warnText}>⚠ Lưu API key ngay — sẽ không hiện lại</Text>
       </View>
       <View style={cg.keyBox}>
         <Text selectable style={cg.keyText}>{apiKey}</Text>
       </View>
+      <TouchableOpacity
+        style={[cg.createBtn, { backgroundColor: C.panel2, borderWidth: 1, borderColor: C.border, marginTop: 6 }]}
+        onPress={() => copy('API key', apiKey)}
+      >
+        <Text style={[cg.createText, { color: C.text }]}>📋 Sao chép API Key</Text>
+      </TouchableOpacity>
+
+      {/* MOI: Device ID - ESP32 can de poll lenh bat/tat, khong bi mat */}
+      {deviceId ? (
+        <>
+          <Text style={[cg.warnText, { marginTop: 10, marginBottom: 4 }]}>
+            Device ID (nhập vào ESP32 cùng API Key)
+          </Text>
+          <View style={cg.keyBox}>
+            <Text selectable style={cg.keyText}>{deviceId}</Text>
+          </View>
+          <TouchableOpacity
+            style={[cg.createBtn, { backgroundColor: C.panel2, borderWidth: 1, borderColor: C.border, marginTop: 6 }]}
+            onPress={() => copy('Device ID', deviceId)}
+          >
+            <Text style={[cg.createText, { color: C.text }]}>📋 Sao chép Device ID</Text>
+          </TouchableOpacity>
+        </>
+      ) : null}
+
       <View style={{ flexDirection: 'row', gap: 6, marginTop: 8 }}>
-        <TouchableOpacity style={[cg.createBtn, { flex: 1, backgroundColor: C.panel2, borderWidth: 1, borderColor: C.border }]} onPress={copy}>
-          <Text style={[cg.createText, { color: C.text }]}> Sao chép</Text>
-        </TouchableOpacity>
         <TouchableOpacity style={[cg.createBtn, { flex: 1 }]} onPress={onClose}>
           <Text style={cg.createText}>Đóng</Text>
         </TouchableOpacity>

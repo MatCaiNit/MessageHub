@@ -26,7 +26,6 @@ export const conversationApi = {
   create: (participantId) =>
     client.post('/api/conversations', { participantId }),
 
-  // FIX: BE mong `participantIds`, khong phai `memberIds`
   createGroup: (name, memberIds, isPublic) =>
     client.post('/api/conversations/group', {
       name,
@@ -34,7 +33,6 @@ export const conversationApi = {
       ...(typeof isPublic === 'boolean' ? { isPublic } : {}),
     }),
 
-  // Lay tin nhan cua 1 conversation (co phan trang)
   getMessages: (conversationId, page = 1, limit = 30) =>
     client.get(`/api/conversations/${conversationId}/messages?page=${page}&limit=${limit}`),
 
@@ -66,7 +64,6 @@ export const messageApi = {
   recall: (messageId) => client.patch(`/api/messages/${messageId}/recall`),
   markSeen: (messageId) => client.patch(`/api/messages/${messageId}/seen`),
 
-
   upload: (file, onUploadProgress) => {
     const form = new FormData();
     form.append('file', file);
@@ -90,19 +87,33 @@ export const deviceApi = {
 
   listHubs: () => client.get('/api/devices/hubs'),
   listMine: () => client.get('/api/devices'),
+
+  // App doi chieu trang thai outputs thuc cua 1 thiet bi (dung sau khi
+  // sendCommand de xac nhan ESP32 da thuc thi dung chua)
+  getOne: (deviceId) => client.get(`/api/devices/${deviceId}`),
+
   revoke: (deviceId) => client.patch(`/api/devices/${deviceId}/revoke`),
   regenerateKey: (deviceId) => client.patch(`/api/devices/${deviceId}/regenerate-key`),
   addMember: (deviceId, userId) => client.post(`/api/devices/${deviceId}/members`, { userId }),
-  
+
   addDeviceMember: (deviceId, otherDeviceId) =>
     client.post(`/api/devices/${deviceId}/members`, { deviceId: otherDeviceId }),
   removeMember: (deviceId, userId) => client.delete(`/api/devices/${deviceId}/members/${userId}`),
-  sendCommand: (deviceId, command) =>
-    axiosInstance.patch(`/devices/${deviceId}/command`, { command }),
+
+  // FIX: ham cu dung `axiosInstance` (khong ton tai trong file nay - moi noi
+  // khac deu dung `client`) va gui { command } dang string. Backend that
+  // (setDeviceCommand) doc { outputId, state } cho tung dau ra rieng biet,
+  // va thieu tien to /api nen request se rot vao path sai (vd https://host/devices/...
+  // thay vi https://host/api/devices/...).
+  sendCommand: (deviceId, outputId, state) =>
+    client.patch(`/api/devices/${deviceId}/command`, { outputId, state }),
+
+  // Dashboard: lich su cac lan doc cam bien (nhiet do, do am, am thanh, khoang cach...)
+  getTelemetry: (deviceId, limit = 50) =>
+    client.get(`/api/devices/${deviceId}/telemetry?limit=${limit}`),
 };
 
 // ─── SYNC ────────────────────────────────────────────────────────────────────
 export const syncApi = {
   sync: (since) => client.get(`/api/sync?since=${encodeURIComponent(since)}`),
 };
-

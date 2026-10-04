@@ -1,5 +1,6 @@
 import Message from '../models/Message.js';
 import Conversation from '../models/Conversation.js';
+import Device from '../models/Device.js';
 import { broadcastToConversation } from '../sockets/socketHandler.js';
 import { SOCKET_EVENTS } from '../sockets/socketEvents.js';
 
@@ -20,7 +21,16 @@ export const uploadAttachment = async (req, res) => {
   }
 };
 
-// POST /api/messages/device 
+// Doan tu outputId suy ra loai dau ra khi ESP32 tu khai bao lan dau (boot)
+const guessOutputKind = (outputId) => {
+  const id = outputId.toLowerCase();
+  if (id.includes('led')) return 'led';
+  if (id.includes('relay')) return 'relay';
+  if (id.includes('buzzer') || id.includes('coi')) return 'buzzer';
+  return 'other';
+};
+
+// POST /api/messages/device
 export const sendDeviceMessage = async (req, res) => {
   try {
     const { content, type, deviceData } = req.body;
@@ -34,6 +44,55 @@ export const sendDeviceMessage = async (req, res) => {
       type: type || 'device_event',
       deviceData: deviceData || null,
     });
+
+    // THAY DOI MOI: dong bo trang thai outputs tu payload cua ESP32 vao
+    // Device.outputs, de app doc duoc trang thai THAT (khong chi doan qua
+    // optimistic update). Thieu buoc nay thi nut toggle tren app se lech
+    // ngay khi cam bien/nut vat ly tu bat den ma khong qua app.
+    if (deviceData && Array.isArray(deviceData.outputs)) {
+      const device = req.device;
+      const known = new Set(device.outputs.map((o) => o.outputId));
+      let changed = false;
+
+      for (const incoming of deviceData.outputs) {
+        if (typeof incoming?.outputId !== 'string') continue;
+        if (typeof incoming?.state !== 'boolean') continue;
+
+        if (known.has(incoming.outputId)) {
+          // Da khai bao roi -> chi cap nhat state neu khac
+          const output = device.outputs.find((o) => o.outputId === incoming.outputId);
+          if (output.state !== incoming.state) {
+            output.state = incoming.state;
+            changed = true;
+          }
+        } else {
+          // Dau ra moi, firmware tu khai bao lan dau (vi du luc boot)
+          device.outputs.push({
+            outputId: incoming.outputId,
+            label: incoming.outputId,
+            kind: guessOutputKind(incoming.outputId),
+            state: incoming.state,
+          });
+          known.add(incoming.outputId);
+          changed = true;
+        }
+      }
+
+      if (changed) await device.save();
+    }
+
+    // ================== MOI: LUU LAN DOC CAM BIEN GAN NHAT ==================
+    // ESP32 gui type "device_telemetry" voi deviceData.readings = { temperature,
+    // humidity, soundLevel, distanceCm, ... } (xem sendTelemetry() trong firmware).
+    // Luu de Dashboard tren app doc "chi so hien tai" ma khong can quet lai
+    // toan bo lich su tin nhan moi lan mo man hinh.
+    if (type === 'device_telemetry' && deviceData && typeof deviceData.readings === 'object') {
+      const device = req.device;
+      device.lastTelemetry = deviceData.readings;
+      device.lastTelemetryAt = new Date();
+      await device.save();
+    }
+    // ==========================================================================
 
     await Conversation.findByIdAndUpdate(conversationId, { lastMessage: message._id });
 
