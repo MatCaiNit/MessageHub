@@ -30,6 +30,18 @@ const guessOutputKind = (outputId) => {
   return 'other';
 };
 
+
+const guessSensorKind = (sensorId) => {
+  const id = sensorId.toLowerCase();
+  if (id.includes('pir')) return 'pir';
+  if (id.includes('dht')) return 'dht';
+  if (id.includes('sound')) return 'sound';
+  if (id.includes('distance')) return 'distance';
+  if (id.includes('gas')) return 'gas';
+  return 'other';
+};
+
+
 // POST /api/messages/device
 export const sendDeviceMessage = async (req, res) => {
   try {
@@ -45,10 +57,7 @@ export const sendDeviceMessage = async (req, res) => {
       deviceData: deviceData || null,
     });
 
-    // THAY DOI MOI: dong bo trang thai outputs tu payload cua ESP32 vao
-    // Device.outputs, de app doc duoc trang thai THAT (khong chi doan qua
-    // optimistic update). Thieu buoc nay thi nut toggle tren app se lech
-    // ngay khi cam bien/nut vat ly tu bat den ma khong qua app.
+
     if (deviceData && Array.isArray(deviceData.outputs)) {
       const device = req.device;
       const known = new Set(device.outputs.map((o) => o.outputId));
@@ -81,18 +90,48 @@ export const sendDeviceMessage = async (req, res) => {
       if (changed) await device.save();
     }
 
-    // ================== MOI: LUU LAN DOC CAM BIEN GAN NHAT ==================
-    // ESP32 gui type "device_telemetry" voi deviceData.readings = { temperature,
-    // humidity, soundLevel, distanceCm, ... } (xem sendTelemetry() trong firmware).
-    // Luu de Dashboard tren app doc "chi so hien tai" ma khong can quet lai
-    // toan bo lich su tin nhan moi lan mo man hinh.
+
+    if (deviceData && Array.isArray(deviceData.sensors)) {
+      const device = req.device;
+      const knownSensors = new Set(device.sensors.map((sv) => sv.sensorId));
+      let sensorsChanged = false;
+
+      for (const incoming of deviceData.sensors) {
+        if (typeof incoming?.sensorId !== 'string') continue;
+        if (typeof incoming?.enabled !== 'boolean') continue;
+
+        if (knownSensors.has(incoming.sensorId)) {
+          const sensor = device.sensors.find((sv) => sv.sensorId === incoming.sensorId);
+          if (sensor.enabled !== incoming.enabled) {
+            sensor.enabled = incoming.enabled;
+            sensorsChanged = true;
+          }
+          // Cap nhat nhan hien thi neu firmware co gui kem (vd lan dau khai bao)
+          if (typeof incoming.label === 'string' && incoming.label && sensor.label !== incoming.label) {
+            sensor.label = incoming.label;
+            sensorsChanged = true;
+          }
+        } else {
+          device.sensors.push({
+            sensorId: incoming.sensorId,
+            label: incoming.label || incoming.sensorId,
+            kind: guessSensorKind(incoming.sensorId),
+            enabled: incoming.enabled,
+          });
+          knownSensors.add(incoming.sensorId);
+          sensorsChanged = true;
+        }
+      }
+
+      if (sensorsChanged) await device.save();
+    }
+
     if (type === 'device_telemetry' && deviceData && typeof deviceData.readings === 'object') {
       const device = req.device;
       device.lastTelemetry = deviceData.readings;
       device.lastTelemetryAt = new Date();
       await device.save();
     }
-    // ==========================================================================
 
     await Conversation.findByIdAndUpdate(conversationId, { lastMessage: message._id });
 

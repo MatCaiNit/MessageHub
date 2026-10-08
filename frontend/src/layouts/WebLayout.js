@@ -432,6 +432,49 @@ const handleToggle = async (device, output) => {
   }, 8000);
 };
 
+const sensorKeyOf = (deviceId, sensorId) => `${deviceId}:sensor:${sensorId}`;
+
+const patchSensor = (deviceId, sensorId, enabled) => {
+  setDevices((prev) =>
+    prev.map((d) =>
+      d._id !== deviceId
+        ? d
+        : { ...d, sensors: (d.sensors || []).map((sv) => sv.sensorId === sensorId ? { ...sv, enabled } : sv) }
+    )
+  );
+};
+
+const handleToggleSensor = async (device, sensor) => {
+  const key = sensorKeyOf(device._id, sensor.sensorId);
+  if (pendingKeys.includes(key)) return;
+
+  const next = !sensor.enabled;
+  const previous = sensor.enabled;
+
+  patchSensor(device._id, sensor.sensorId, next);
+  setPendingKeys((prev) => [...prev, key]);
+
+  try {
+    await deviceApi.sendSensorCommand(device._id, sensor.sensorId, next);
+  } catch (err) {
+    patchSensor(device._id, sensor.sensorId, previous);
+    setPendingKeys((prev) => prev.filter((k) => k !== key));
+    window.alert('Lỗi: Không gửi được lệnh tới ' + (sensor.label || sensor.sensorId));
+    return;
+  }
+
+  setTimeout(async () => {
+    try {
+      const { data } = await deviceApi.getOne(device._id);
+      const real = data.sensors?.find((sv) => sv.sensorId === sensor.sensorId);
+      if (real) patchSensor(device._id, sensor.sensorId, real.enabled);
+    } catch (_) {}
+    finally {
+      setPendingKeys((prev) => prev.filter((k) => k !== key));
+    }
+  }, 8000);
+};
+
   const load = useCallback(async () => {
     try {
       const { data } = await deviceApi.listMine();
@@ -553,6 +596,38 @@ const handleToggle = async (device, output) => {
                 >
                   <Text style={{ fontSize: FONT.xs, fontWeight: '700', color: output.state ? '#15803D' : C.text }}>
                     {pending ? '...' : output.state ? 'Tắt' : 'Bật'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+
+      {/* MOI: 1 nut bat/tam tat cho tung CAM BIEN cua thiet bi (khac voi output) */}
+      {d.sensors?.length ? (
+        <View style={{ paddingHorizontal: 4, paddingBottom: 6, gap: 6 }}>
+          {d.sensors.map((sensor) => {
+            const pending = pendingKeys.includes(sensorKeyOf(d._id, sensor.sensorId));
+            return (
+              <View key={sensor.sensorId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={{ flex: 1, fontSize: FONT.sm, color: C.text }} numberOfLines={1}>
+                  📡 {sensor.label || sensor.sensorId}
+                </Text>
+                <TouchableOpacity
+                  style={{
+                    minWidth: 76, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5,
+                    borderRadius: RADIUS.full, borderWidth: 1,
+                    borderColor: sensor.enabled ? C.ok : C.border,
+                    backgroundColor: sensor.enabled ? '#EFFDF3' : C.panel2,
+                    opacity: pending ? 0.6 : 1,
+                    cursor: 'pointer',
+                  }}
+                  onPress={() => handleToggleSensor(d, sensor)}
+                  disabled={pending || !d.isActive}
+                >
+                  <Text style={{ fontSize: FONT.xs, fontWeight: '700', color: sensor.enabled ? '#15803D' : C.text }}>
+                    {pending ? '...' : sensor.enabled ? 'Đang đo' : 'Đã tắt'}
                   </Text>
                 </TouchableOpacity>
               </View>

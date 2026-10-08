@@ -8,6 +8,7 @@ import {
   addMember,
   removeMember,
   setDeviceCommand,
+  setSensorCommand,
   getDeviceCommand,
   getDeviceById,
   getDeviceTelemetryHistory,
@@ -27,7 +28,7 @@ router.post('/', registerDeviceRules, validate, registerDevice);
 router.get('/hubs', listDeviceHubs);
 router.get('/', listMyDevices);
 
-// App lấy chi tiết 1 thiết bị để đối chiếu trạng thái outputs thật sau khi bấm nút
+// App lấy chi tiết 1 thiết bị để đối chiếu trạng thái outputs/sensors thật sau khi bấm nút
 router.get('/:id', deviceIdParamRule, validate, getDeviceById);
 
 // App (Dashboard) lấy lịch sử các lần đọc cảm biến để vẽ biểu đồ
@@ -39,6 +40,10 @@ router.patch('/:id/regenerate-key', deviceIdParamRule, validate, regenerateApiKe
 // App (đã đăng nhập bằng JWT) gửi lệnh bật/tắt cho 1 output cụ thể
 // Body: { outputId: 'relay1', state: true }
 router.patch('/:id/command', deviceIdParamRule, validate, setDeviceCommand);
+
+// App gửi lệnh bật/tắt cho 1 CẢM BIẾN cụ thể (không phải output)
+// Body: { sensorId: 'dht', enabled: false }
+router.patch('/:id/sensor-command', deviceIdParamRule, validate, setSensorCommand);
 
 router.post('/:id/members', addMemberRules, validate, addMember);
 router.delete('/:id/members/:userId', removeMember);

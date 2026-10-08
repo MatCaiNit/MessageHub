@@ -271,11 +271,56 @@ export const setDeviceCommand = async (req, res) => {
   }
 };
 
-/**
- * ESP32 poll dinh ky de lay cac lenh dang cho; lay xong thi clear.
- * Route: GET /api/devices/:id/command   (middleware: deviceProtect - X-Device-Key)
- * Tra  : { commands: [ { outputId, state } ] }
- */
+
+export const setSensorCommand = async (req, res) => {
+  try {
+    const { sensorId, enabled } = req.body;
+
+    if (typeof sensorId !== 'string' || !sensorId.trim()) {
+      return res.status(400).json({ message: 'Thieu sensorId' });
+    }
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ message: 'enabled phai la true hoac false' });
+    }
+
+    const device = await Device.findById(req.params.id);
+    if (!device) {
+      return res.status(404).json({ message: 'Khong tim thay thiet bi' });
+    }
+
+    if (String(device.ownerId) !== req.userId) {
+      return res.status(403).json({ message: 'Khong co quyen dieu khien thiet bi nay' });
+    }
+
+    // sensorId phai ton tai tren thiet bi (firmware tu khai bao luc boot),
+    // neu khong ESP32 se bo qua lenh nay.
+    const sensor = device.sensors.find((sv) => sv.sensorId === sensorId);
+    if (!sensor) {
+      return res.status(400).json({
+        message: `Thiet bi khong co cam bien '${sensorId}'`,
+        available: device.sensors.map((sv) => sv.sensorId),
+      });
+    }
+
+    // Moi cam bien chi giu MOT lenh moi nhat, giong co che cua pendingCommands
+    device.pendingSensorCommands = device.pendingSensorCommands.filter(
+      (c) => c.sensorId !== sensorId
+    );
+    device.pendingSensorCommands.push({ sensorId, enabled, createdAt: new Date() });
+
+    await device.save();
+
+    res.json({
+      message: 'Da gui lenh, thiet bi se thuc thi trong vai giay',
+      sensorId,
+      enabled,
+      label: sensor.label,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Loi server', error: err.message });
+  }
+};
+
 export const getDeviceCommand = async (req, res) => {
   try {
     // deviceProtect gan req.device sau khi so khop X-Device-Key
@@ -288,27 +333,29 @@ export const getDeviceCommand = async (req, res) => {
       outputId: c.outputId,
       state: c.state,
     }));
+    const sensorCommands = device.pendingSensorCommands.map((c) => ({
+      sensorId: c.sensorId,
+      enabled: c.enabled,
+    }));
 
     if (commands.length > 0) {
       device.pendingCommands = [];
+    }
+    if (sensorCommands.length > 0) {
+      device.pendingSensorCommands = [];
     }
 
     // Dung chinh lan poll nay lam heartbeat
     device.lastSeenAt = new Date();
     await device.save();
 
-    res.json({ commands });
+    res.json({ commands, sensorCommands });
   } catch (err) {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
 
-/**
- * App doi chieu trang thai thuc (device.outputs[].state) sau khi gui lenh.
- * Route: GET /api/devices/:id   (middleware: protect - JWT)
- *
- * FIX: cung loi device.owner/req.user nhu setDeviceCommand o tren.
- */
+
 export const getDeviceById = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id).select('-apiKeyHash');
@@ -324,15 +371,7 @@ export const getDeviceById = async (req, res) => {
   }
 };
 
-/**
- * Lich su cac lan doc cam bien (dung de ve bieu do tren Dashboard).
- * Route: GET /api/devices/:id/telemetry?limit=50   (middleware: protect - JWT)
- * Tra  : { readings: [ { readings: {...}, createdAt } ], latest: {...}, latestAt } theo
- *        thu tu THOI GIAN TANG DAN (cu -> moi), tien cho viec ve truc X tren bieu do.
- *
- * Du lieu lay tu Message (type: 'device_telemetry'), khong can them collection rieng
- * vi sendDeviceMessage() da luu 1 Message cho moi lan telemetry gui len.
- */
+
 export const getDeviceTelemetryHistory = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id).select('ownerId conversationId lastTelemetry lastTelemetryAt');

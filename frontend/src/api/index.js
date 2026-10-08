@@ -100,13 +100,11 @@ export const deviceApi = {
     client.post(`/api/devices/${deviceId}/members`, { deviceId: otherDeviceId }),
   removeMember: (deviceId, userId) => client.delete(`/api/devices/${deviceId}/members/${userId}`),
 
-  // FIX: ham cu dung `axiosInstance` (khong ton tai trong file nay - moi noi
-  // khac deu dung `client`) va gui { command } dang string. Backend that
-  // (setDeviceCommand) doc { outputId, state } cho tung dau ra rieng biet,
-  // va thieu tien to /api nen request se rot vao path sai (vd https://host/devices/...
-  // thay vi https://host/api/devices/...).
   sendCommand: (deviceId, outputId, state) =>
     client.patch(`/api/devices/${deviceId}/command`, { outputId, state }),
+
+  sendSensorCommand: (deviceId, sensorId, enabled) =>
+    client.patch(`/api/devices/${deviceId}/sensor-command`, { sensorId, enabled }),
 
   // Dashboard: lich su cac lan doc cam bien (nhiet do, do am, am thanh, khoang cach...)
   getTelemetry: (deviceId, limit = 50) =>

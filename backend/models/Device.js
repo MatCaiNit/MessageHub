@@ -18,8 +18,7 @@ const outputSchema = new mongoose.Schema(
     // GPIO tren ESP32 - chi de hien thi/tra cuu, firmware tu biet pin cua no
     pin: { type: Number },
 
-    // Trang thai THUC do ESP32 bao ve. Day la nguon su that cho nut
-    // toggle tren app; khong co no thi app chi doan trang thai.
+
     state: { type: Boolean, default: false },
   },
   { _id: false }
@@ -33,6 +32,38 @@ const pendingCommandSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+
+const sensorSchema = new mongoose.Schema(
+  {
+    // Khop chinh xac voi truong `id` trong mang sensors[] cua firmware
+    sensorId: { type: String, required: true },
+
+    // Ten hien thi tren app: 'Nhiet do & do am', 'Cam bien chuyen dong'...
+    label: { type: String, default: '' },
+
+    // Loai cam bien, dung de app chon icon phu hop (giong kind cua output)
+    kind: {
+      type: String,
+      enum: ['pir', 'dht', 'sound', 'distance', 'gas', 'other'],
+      default: 'other',
+    },
+
+    // Trang thai THUC do ESP32 bao ve (dang doc hay dang tam ngung).
+    enabled: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
+
+const pendingSensorCommandSchema = new mongoose.Schema(
+  {
+    sensorId: { type: String, required: true },
+    enabled: { type: Boolean, required: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 
 const deviceSchema = new mongoose.Schema(
   {
@@ -60,6 +91,15 @@ const deviceSchema = new mongoose.Schema(
       default: [],
     },
 
+    sensors: {
+      type: [sensorSchema],
+      default: [],
+    },
+    pendingSensorCommands: {
+      type: [pendingSensorCommandSchema],
+      default: [],
+    },
+
     lastTelemetry: {
       type: mongoose.Schema.Types.Mixed,
       default: null,
@@ -68,6 +108,7 @@ const deviceSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
   },
   { timestamps: true }
 );

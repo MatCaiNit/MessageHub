@@ -3,22 +3,16 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <DHT.h>      // Thu vien "DHT sensor library" cua Adafruit - can cai them
-                      // trong Library Manager (Sketch > Include Library > Manage
-                      // Libraries...), tim "DHT sensor library" by Adafruit. No
-                      // se tu doi hoi cai them "Adafruit Unified Sensor" - Arduino
-                      // IDE se hoi cai luon, cu Bam Install.
-#include "Output.h"   // FIX: struct Output phai nam trong header rieng, nap
-                      // truoc khi Arduino IDE tu sinh prototype cho cac ham
-                      // ben duoi - de trong cung 1 file .ino se bi loi
-                      // "Output does not name a type" nhu ban vua gap.
-
+#include <ESPmDNS.h>
+#include <WiFiClientSecure.h>
+#include <DHT.h>
+#include "Output.h"
+#include "Sensor.h"
 //  CHÂN GPIO
 #define PIN_PIR      21   // PIR thực tế đang cắm ở D21
 #define PIN_BOOT_BTN 0
 
-// ====================== CAM BIEN MOI: NHIET/AM/AM THANH/KHOANG CACH =====
-// Chon chan CHUA dung bang PIR(21)/BOOT(0)/LED(26) o tren.
+
 #define PIN_DHT       4    // DHT22 (AM2302) - chan DATA, can 1 tro 10k keo len 3.3V
 #define DHT_TYPE      DHT22
 #define PIN_SOUND     34   // KY-038/KY-037 - chan AO (analog). GPIO34 la chan
@@ -34,9 +28,9 @@ DHT dht(PIN_DHT, DHT_TYPE);
 
 #define TELEMETRY_INTERVAL_MS 30000UL   // gui du lieu cam bien moi 30s
 unsigned long lastTelemetryAt = 0;
-// ==========================================================================
 
-// ====================== DAU RA DIEU KHIEN ON/OFF =============
+
+
 Output outputs[] = {
   { "led", 26, false, false },   // LED qua tro 220 ohm, da noi tren D26
 };
@@ -60,17 +54,60 @@ void setOutput(Output* out, bool on) {
   digitalWrite(out->pin, level ? HIGH : LOW);
   Serial.printf("[OUT] %s -> %s\n", out->id, on ? "BAT" : "TAT");
 }
-// ===============================================================
+
+
+
+Sensor sensors[] = {
+  { "pir",      "Cảm biến chuyển động (PIR)",       true },
+  { "dht",      "Nhiệt độ & độ ẩm (DHT22)",          true },
+  { "sound",    "Âm thanh (KY-037/038)",             true },
+  { "distance", "Khoảng cách - vật thể (HC-SR04)",   true },
+  { "gas",      "Khí gas / khói (MQ-2)",              true },
+};
+const int SENSOR_COUNT = sizeof(sensors) / sizeof(sensors[0]);
+
+Sensor* findSensor(const char* id) {
+  if (!id) return nullptr;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (strcmp(sensors[i].id, id) == 0) return &sensors[i];
+  }
+  return nullptr;
+}
+
+bool sensorEnabled(const char* id) {
+  Sensor* sv = findSensor(id);
+  return sv ? sv->enabled : true;
+}
+
+// Gan mang outputs[] hien tai vao 1 JsonDocument (dung chung cho ca su kien
+// "boot" va "command_applied" - tranh lap code).
+void appendOutputsJson(JsonDocument &doc) {
+  JsonArray arr = doc.createNestedArray("outputs");
+  for (int i = 0; i < OUTPUT_COUNT; i++) {
+    JsonObject o = arr.createNestedObject();
+    o["outputId"] = outputs[i].id;
+    o["state"]    = outputs[i].state;
+  }
+}
+
+// Gan mang sensors[] hien tai vao 1 JsonDocument - backend doc deviceData.sensors
+// de dong bo Device.sensors[].enabled (xem messageController.js).
+void appendSensorsJson(JsonDocument &doc) {
+  JsonArray arr = doc.createNestedArray("sensors");
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    JsonObject o = arr.createNestedObject();
+    o["sensorId"] = sensors[i].id;
+    o["label"]    = sensors[i].label;
+    o["enabled"]  = sensors[i].enabled;
+  }
+}
+// ===================================================================
 
 const unsigned long PIR_LOW_STABLE   = 5000;
 const unsigned long PIR_MIN_INTERVAL = 10000;   // PIR_MIN_INTERVAL da la khoang cach toi thieu ~10s giua 2 lan phat hien
 #define DEBUG_PIR_STATE  true
 
-// ====================== MOI: CHUOI CHUYEN DONG 3 LAN LIEN TIEP ===
-// Phat hien 3 lan chuyen dong LIEN TIEP, moi lan cach lan truoc khong qua
-// MOTION_GAP_MAX_MS (~10-15s, PIR_MIN_INTERVAL o tren da dam bao toi thieu
-// 10s giua 2 lan) thi nhay LED + bao ve app. Neu lau hon MOTION_GAP_MAX_MS
-// ma khong co lan tiep theo thi coi nhu chuoi bi dut, dem lai tu dau -
+
 // khong bao gi ca neu chua du 3 lan.
 #define MOTION_SEQ_TARGET    3
 #define MOTION_GAP_MAX_MS    15000UL
@@ -100,9 +137,60 @@ WiFiManager wm;
 // FIX: dat 2 ham nay SAU khi apiKey/deviceId da duoc khai bao o tren (2 bien
 // nay dung ben trong ham) - Arduino chi tu sinh prototype cho HAM, khong
 // giup gi voi thu tu khai bao BIEN toan cuc.
-const char* SERVER_BASE = "http://192.168.1.3:3000";
-String messageUrl() { return String(SERVER_BASE) + "/api/messages/device"; }
-String commandUrl() { return String(SERVER_BASE) + "/api/devices/" + deviceId + "/command"; }
+
+String serverBase     = "http://ManhQuynh.local:3000";   // gia tri mac dinh o portal
+String serverResolved = "";   // serverBase sau khi doi ".local" thanh IP (cache)
+
+// Doi serverBase thanh URL dung duoc ngay. Neu host la "xxx.local" thi hoi mDNS
+// de lay IP hien tai cua may do; cac dang khac (IP, ten mien, https) giu nguyen.
+String resolveServerBase() {
+  String base = serverBase;
+  base.trim();
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+
+  int schemeEnd = base.indexOf("://");
+  if (schemeEnd < 0) { base = "http://" + base; schemeEnd = 4; }
+  String scheme   = base.substring(0, schemeEnd + 3);
+  String rest     = base.substring(schemeEnd + 3);          // host[:port][/path]
+  int slash       = rest.indexOf('/');
+  String hostPort = slash < 0 ? rest : rest.substring(0, slash);
+  String path     = slash < 0 ? "" : rest.substring(slash);
+  int colon       = hostPort.indexOf(':');
+  String host     = colon < 0 ? hostPort : hostPort.substring(0, colon);
+  String port     = colon < 0 ? "" : hostPort.substring(colon);
+
+  if (!host.endsWith(".local")) return base;                // IP / ten mien: dung nguyen
+  if (serverResolved.length() > 0) return serverResolved;   // da tim thay truoc do
+
+  String name = host.substring(0, host.length() - 6);       // bo duoi ".local"
+  IPAddress ip = MDNS.queryHost(name.c_str(), 3000);
+  if ((uint32_t)ip == 0) {
+    Serial.printf("[SERVER] Khong tim thay '%s.local' tren mang nay (may tinh da bat chua? "
+                  "cung WiFi chua? mang co chan mDNS khong?)\n", name.c_str());
+    return base;
+  }
+  serverResolved = scheme + ip.toString() + port + path;
+  Serial.printf("[SERVER] %s.local -> %s\n", name.c_str(), serverResolved.c_str());
+  return serverResolved;
+}
+
+// Goi khi 1 request that bai: xoa cache de lan sau tim lai IP moi (may tinh
+// co the vua doi IP, hoac ESP32 vua chuyen sang mang WiFi khac).
+void invalidateServerCache() { serverResolved = ""; }
+
+// http:// dung WiFiClient thuong, https:// dung WiFiClientSecure (khong kiem tra
+// chung chi - du cho do an; de bao mat that thi nap root CA vao).
+bool beginHttp(HTTPClient &http, WiFiClient &plain, WiFiClientSecure &secure, const String &url) {
+  if (url.startsWith("https://")) {
+    secure.setInsecure();
+    return http.begin(secure, url);
+  }
+  return http.begin(plain, url);
+}
+
+
+String messageUrl() { return resolveServerBase() + "/api/messages/device"; }
+String commandUrl() { return resolveServerBase() + "/api/devices/" + deviceId + "/command"; }
 
 bool sendMessage(const char* content, const char* type, JsonDocument* deviceDataDoc = nullptr);
 void pollCommand();
@@ -128,8 +216,9 @@ void setupWiFiAndApiKey() {
   // Namespace flash rieng theo tung chip -> nhieu board khong ghi de len nhau
   // du dung chung 1 file code (moi board co Chip ID rieng)
   prefs.begin("msghub", false);
-  apiKey   = prefs.getString("apikey", "");
-  deviceId = prefs.getString("deviceid", "");
+  apiKey     = prefs.getString("apikey", "");
+  deviceId   = prefs.getString("deviceid", "");
+  serverBase = prefs.getString("server", serverBase);
 
   // FIX: gioi han cu la 64 ky tu, nhung API key that (tien to "dvk_" + 64 ky
   // tu hex) dai ~68 ky tu nen bi cat, khong nhap du duoc. Tang len 100.
@@ -144,12 +233,21 @@ void setupWiFiAndApiKey() {
       deviceId.c_str(), 40);
   wm.addParameter(&customDeviceId);
 
+  // MOI: dia chi server - nhap 1 lan, dung duoc o moi mang WiFi (xem giai thich
+  // o khoi "DIA CHI SERVER KHONG PHU THUOC IP" phia tren).
+  WiFiManagerParameter customServer(
+      "server",
+      "Server (vd http://TEN-MAY-TINH.local:3000 hoac https://ten-ban.onrender.com)",
+      serverBase.c_str(), 100);
+  wm.addParameter(&customServer);
+
   pinMode(PIN_BOOT_BTN, INPUT_PULLUP);
   if (digitalRead(PIN_BOOT_BTN) == LOW) {
     Serial.println("[SETUP] Nut BOOT dang giu - xoa config cu");
     wm.resetSettings();
     prefs.remove("apikey");
     prefs.remove("deviceid");
+    prefs.remove("server");
   }
 
   wm.setConfigPortalTimeout(180);
@@ -169,6 +267,22 @@ void setupWiFiAndApiKey() {
 
   Serial.println("[SETUP] WiFi da ket noi!");
   Serial.printf("[SETUP] IP: %s\n", WiFi.localIP().toString().c_str());
+
+  // Bat mDNS de co the hoi IP cua may tinh theo ten (.local) - phai goi SAU khi co WiFi
+  if (MDNS.begin(deviceLabel.c_str())) {
+    Serial.println("[SETUP] mDNS san sang");
+  } else {
+    Serial.println("[SETUP] ⚠ Khong bat duoc mDNS - chi dung duoc dia chi IP/ten mien that");
+  }
+
+  String enteredServer = String(customServer.getValue());
+  enteredServer.trim();
+  if (enteredServer.length() > 0) {
+    serverBase = enteredServer;
+    prefs.putString("server", serverBase);
+    serverResolved = "";
+    Serial.printf("[SETUP] Server: %s\n", serverBase.c_str());
+  }
 
   String enteredKey = String(customApiKey.getValue());
   enteredKey.trim();
@@ -211,7 +325,8 @@ void setup() {
     setOutput(&outputs[i], false);
   }
 
-  // Cam bien moi
+  // Cam bien moi (pin luon duoc khoi tao du cam bien dang bat hay tam tat -
+  // "tam tat" chi la khong DOC/khong GUI du lieu, khong anh huong phan cung)
   dht.begin();
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
@@ -242,14 +357,12 @@ void setup() {
              "V %s da online — PIR san sang phat hien chuyen dong",
              deviceLabel.c_str());
 
-    StaticJsonDocument<128> bootData;
+    // MOI: tang kich thuoc buffer vi bootData gio co THEM mang sensors[]
+    // (ngoai outputs[] cu) - 128 byte la khong du, se bi cat du lieu lang le.
+    StaticJsonDocument<512> bootData;
     bootData["event"] = "boot";
-    JsonArray arr = bootData.createNestedArray("outputs");
-    for (int i = 0; i < OUTPUT_COUNT; i++) {
-      JsonObject o = arr.createNestedObject();
-      o["outputId"] = outputs[i].id;
-      o["state"]    = outputs[i].state;
-    }
+    appendOutputsJson(bootData);
+    appendSensorsJson(bootData);
 
     if (sendMessage(hello, "device_event", &bootData)) {
       Serial.println("[BOOT] OK - firmware san sang!");
@@ -323,34 +436,44 @@ float readDistanceCm() {
   return duration * 0.0343f / 2.0f;   // van toc am thanh ~343 m/s
 }
 
-// Doc ca 4 cam bien roi gui 1 goi telemetry duy nhat len server.
-// Dung deviceData.readings de FE (Dashboard) doc va ve bieu do.
 void sendTelemetry() {
-  float temperature = dht.readTemperature();   // NaN neu doc loi
-  float humidity     = dht.readHumidity();     // NaN neu doc loi
-  int   soundRaw      = analogRead(PIN_SOUND); // 0-4095
-  float distanceCm     = readDistanceCm();      // -1 neu khong do duoc
-  int   gasRaw         = analogRead(PIN_GAS);   // 0-4095, MQ-2 (khi gas/khoi)
+  bool dhtOn  = sensorEnabled("dht");
+  bool soundOn = sensorEnabled("sound");
+  bool distOn  = sensorEnabled("distance");
+  bool gasOn   = sensorEnabled("gas");
+
+  float temperature = NAN;
+  float humidity     = NAN;
+  int   soundRaw      = 0;
+  float distanceCm     = -1;
+  int   gasRaw         = 0;
+
+  if (dhtOn) {
+    temperature = dht.readTemperature();   // NaN neu doc loi
+    humidity     = dht.readHumidity();     // NaN neu doc loi
+  }
+  if (soundOn) soundRaw   = analogRead(PIN_SOUND);   // 0-4095
+  if (distOn)  distanceCm = readDistanceCm();        // -1 neu khong do duoc
+  if (gasOn)   gasRaw     = analogRead(PIN_GAS);      // 0-4095, MQ-2 (khi gas/khoi)
 
   StaticJsonDocument<256> data;
   data["event"] = "telemetry";
   JsonObject readings = data.createNestedObject("readings");
-  if (!isnan(temperature)) readings["temperature"] = temperature;
-  if (!isnan(humidity))    readings["humidity"]    = humidity;
-  readings["soundLevel"] = soundRaw;
-  if (distanceCm >= 0)     readings["distanceCm"]  = distanceCm;
-  readings["gasLevel"]    = gasRaw;
+  if (dhtOn && !isnan(temperature)) readings["temperature"] = temperature;
+  if (dhtOn && !isnan(humidity))    readings["humidity"]    = humidity;
+  if (soundOn)                      readings["soundLevel"]  = soundRaw;
+  if (distOn && distanceCm >= 0)    readings["distanceCm"]  = distanceCm;
+  if (gasOn)                        readings["gasLevel"]    = gasRaw;
 
-  char content[160];
-  snprintf(content, sizeof(content),
-           "Nhiet do %.1f°C, do am %.0f%%, am thanh %d, khoang cach %.0fcm, khi gas %d",
-           isnan(temperature) ? 0.0f : temperature,
-           isnan(humidity) ? 0.0f : humidity,
-           soundRaw,
-           distanceCm < 0 ? 0.0f : distanceCm,
-           gasRaw);
+  // Tat ca cam bien doc deu dang bi tam tat -> khong co gi de gui, bo qua
+  // luon lan nay (tranh gui 1 message rong moi 30s).
+  if (readings.size() == 0) {
+    Serial.println("[TELEMETRY] Tat ca cam bien dang tam tat - bo qua lan gui nay");
+    return;
+  }
 
-  sendMessage(content, "device_telemetry", &data);
+  sendMessage("Cap nhat du lieu cam bien (xem chi tiet tren Dashboard)",
+              "device_telemetry", &data);
 }
 
 
@@ -365,6 +488,7 @@ void loop() {
       wm.resetSettings();
       prefs.remove("apikey");
       prefs.remove("deviceid");
+      prefs.remove("server");
       delay(500);
       ESP.restart();
     }
@@ -389,29 +513,33 @@ void loop() {
     sendTelemetry();
   }
 
+  // Doc chan PIR MOI lan loop (de khi bat lai cam bien tu trang thai tam tat
+  // thi khong bi "nhay" theo 1 canh xung cu da bi bo lo luc dang tat).
   int currentState = digitalRead(PIN_PIR);
 
-  if (DEBUG_PIR_STATE && (now - lastDebugTime > 3000)) {
-    lastDebugTime = now;
-    unsigned long lowSince = (currentState == LOW) ? (now - lastPirLowTime) : 0;
-    Serial.printf("[DEBUG] PIR = %s | armed = %s | LOW duoc %lums\n",
-                  currentState == HIGH ? "HIGH" : "LOW",
-                  armed ? "YES" : "NO", lowSince);
-  }
-
-  if (currentState == LOW) {
-    if (lastPirState == HIGH) lastPirLowTime = now;
-    if (!armed && (now - lastPirLowTime) >= PIR_LOW_STABLE) {
-      armed = true;
-      Serial.println("[PIR] ✓ Armed");
+  if (sensorEnabled("pir")) {
+    if (DEBUG_PIR_STATE && (now - lastDebugTime > 3000)) {
+      lastDebugTime = now;
+      unsigned long lowSince = (currentState == LOW) ? (now - lastPirLowTime) : 0;
+      Serial.printf("[DEBUG] PIR = %s | armed = %s | LOW duoc %lums\n",
+                    currentState == HIGH ? "HIGH" : "LOW",
+                    armed ? "YES" : "NO", lowSince);
     }
-  }
 
-  if (currentState == HIGH && lastPirState == LOW
-      && armed && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
-    lastTriggerTime = now;
-    armed = false;
-    onMotionDetected();
+    if (currentState == LOW) {
+      if (lastPirState == HIGH) lastPirLowTime = now;
+      if (!armed && (now - lastPirLowTime) >= PIR_LOW_STABLE) {
+        armed = true;
+        Serial.println("[PIR] ✓ Armed");
+      }
+    }
+
+    if (currentState == HIGH && lastPirState == LOW
+        && armed && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
+      lastTriggerTime = now;
+      armed = false;
+      onMotionDetected();
+    }
   }
 
   lastPirState = currentState;
@@ -419,9 +547,11 @@ void loop() {
 }
 
 
-// ====================== POLL LENH ON/OFF TU APP ================
+// ====================== POLL LENH TU APP (OUTPUT + CAM BIEN) ===
 /*
- *  Backend tra ve: { "commands": [ { "outputId": "led", "state": true }, ... ] }
+ *  Backend tra ve trong 1 lan poll duy nhat:
+ *  { "commands":       [ { "outputId": "led", "state": true }, ... ],
+ *    "sensorCommands": [ { "sensorId": "dht", "enabled": false }, ... ] }
  *  Can Device ID that (khong chi API key) vi route nay la
  *  GET /api/devices/:id/command.
  */
@@ -431,15 +561,20 @@ void pollCommand() {
   lastCommandPoll = millis();
 
   HTTPClient http;
-  http.begin(commandUrl());
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  beginHttp(http, plainClient, secureClient, commandUrl());
   http.addHeader("X-Device-Key", apiKey);
   http.setTimeout(5000);
 
   int code = http.GET();
-  bool applied = false;
+  if (code <= 0) invalidateServerCache();   // khong toi duoc server -> lan sau tim lai IP
+  bool appliedOutput = false;
+  bool appliedSensor = false;
 
   if (code == 200) {
-    StaticJsonDocument<512> doc;
+    // MOI: tang tu 512 len 768 vi response gio co them mang sensorCommands
+    StaticJsonDocument<768> doc;
     if (deserializeJson(doc, http.getString()) == DeserializationError::Ok) {
       JsonArray commands = doc["commands"].as<JsonArray>();
       for (JsonObject cmd : commands) {
@@ -454,7 +589,25 @@ void pollCommand() {
         if (out->state == wanted) continue;
 
         setOutput(out, wanted);
-        applied = true;
+        appliedOutput = true;
+      }
+
+      // MOI: lenh bat/tat CAM BIEN, cung format voi commands[] o tren
+      JsonArray sensorCommands = doc["sensorCommands"].as<JsonArray>();
+      for (JsonObject cmd : sensorCommands) {
+        const char* sensorId = cmd["sensorId"];
+        bool wanted = cmd["enabled"];
+
+        Sensor* sv = findSensor(sensorId);
+        if (!sv) {
+          Serial.printf("[CMD] Bo qua - khong co cam bien '%s'\n", sensorId ? sensorId : "?");
+          continue;
+        }
+        if (sv->enabled == wanted) continue;
+
+        sv->enabled = wanted;
+        Serial.printf("[SENSOR] %s -> %s\n", sv->id, wanted ? "BAT" : "TAM TAT");
+        appliedSensor = true;
       }
     }
   } else if (code > 0) {
@@ -462,16 +615,13 @@ void pollCommand() {
   }
   http.end();
 
-  // Bao lai trang thai THUC sau khi thuc thi, de app doc duoc ngay
-  if (applied) {
-    StaticJsonDocument<128> data;
+  // Bao lai trang thai THUC sau khi thuc thi (ca output lan cam bien), de
+  // app doc duoc ngay ma khong phai doi den lan telemetry/boot tiep theo.
+  if (appliedOutput || appliedSensor) {
+    StaticJsonDocument<512> data;
     data["event"] = "command_applied";
-    JsonArray arr = data.createNestedArray("outputs");
-    for (int i = 0; i < OUTPUT_COUNT; i++) {
-      JsonObject o = arr.createNestedObject();
-      o["outputId"] = outputs[i].id;
-      o["state"]    = outputs[i].state;
-    }
+    appendOutputsJson(data);
+    appendSensorsJson(data);
     sendMessage("Da cap nhat trang thai thiet bi", "device_event", &data);
   }
 }
@@ -482,12 +632,16 @@ bool sendMessage(const char* content, const char* type, JsonDocument* deviceData
   if (WiFi.status() != WL_CONNECTED || apiKey.length() == 0) return false;
 
   HTTPClient http;
-  http.begin(messageUrl());
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  beginHttp(http, plainClient, secureClient, messageUrl());
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Key", apiKey);
   http.setTimeout(5000);
 
-  StaticJsonDocument<384> doc;
+  // MOI: tang tu 384 len 512 - deviceData gio co the mang ca outputs[] va
+  // sensors[] cung luc (boot / command_applied), can them cho.
+  StaticJsonDocument<512> doc;
   doc["content"] = content;
   doc["type"]    = type;
   if (deviceDataDoc != nullptr) {
@@ -500,6 +654,7 @@ bool sendMessage(const char* content, const char* type, JsonDocument* deviceData
   Serial.println(body);
 
   int code = http.POST(body);
+  if (code <= 0) invalidateServerCache();   // khong toi duoc server -> lan sau tim lai IP
   bool ok = (code >= 200 && code < 300);
 
   if (ok) {
