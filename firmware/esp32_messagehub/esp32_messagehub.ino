@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiMulti.h>      // MOI: nho nhieu mang WiFi, tu noi mang nao co song
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -176,9 +177,84 @@ WiFiManager wm;
 //   2) Dia chi cong khai: https://ten-ban.onrender.com  (backend deploy len
 //      mang / ngrok / cloudflare tunnel - chay duoc ca tren WiFi truong hoc,
 //      quan ca phe chan thiet bi thay nhau)
-String serverBase     = "http://ManhQuynh.local:3000";   // gia tri mac dinh (ten may cua ban);
-                                                          // portal/flash neu co se ghi de len day
+// MOI: mac dinh tro thang vao server da deploy tren Render -> chay o MOI mang WiFi.
+// Muon doi server mac dinh: sua SERVER_DEFAULT va TANG SERVER_CFG_VER de ESP32
+// bo gia tri cu da luu trong flash (neu khong, flash cu se ghi de len mac dinh).
+#define SERVER_DEFAULT  "https://messagehub-z2da.onrender.com"
+#define SERVER_CFG_VER  2
+String serverBase     = SERVER_DEFAULT;   // portal/flash neu co se ghi de len day
 String serverResolved = "";   // serverBase sau khi doi ".local" thanh IP (cache)
+
+// ====================== MOI: NHO NHIEU MANG WIFI + WATCHDOG ==============
+// Luu toi da MAX_SAVED_WIFI mang (moi mang vua noi thanh cong dua len dau).
+// Khi khoi dong / mat mang, ESP32 tu noi vao mang co song trong danh sach,
+// khong can mo portal. Chi mo portal khi KHONG mang nao ket noi duoc.
+#define MAX_SAVED_WIFI        3
+#define WIFI_OFFLINE_RESTART_MS 180000UL    // mat WiFi qua 3 phut -> khoi dong lai
+#define SERVER_KICK_MS          120000UL    // WiFi ok nhung server khong tra loi 2 phut -> ngat/noi lai WiFi
+#define SERVER_RESTART_MS       600000UL    // ... 10 phut -> khoi dong lai
+
+WiFiMulti wifiMulti;
+bool wifiMultiReady = false;
+unsigned long lastServerOk = 0;   // lan cuoi server tra loi (bat ky ma HTTP nao)
+
+String wifiKey(const char* prefix, int i) { return String(prefix) + String(i); }
+
+void saveCurrentNetwork() {
+  String ssid = WiFi.SSID();
+  if (ssid.length() == 0) return;
+  String pass = WiFi.psk();
+
+  String ss[MAX_SAVED_WIFI], pp[MAX_SAVED_WIFI];
+  for (int i = 0; i < MAX_SAVED_WIFI; i++) {
+    ss[i] = prefs.getString(wifiKey("ssid", i).c_str(), "");
+    pp[i] = prefs.getString(wifiKey("pass", i).c_str(), "");
+  }
+
+  String ns[MAX_SAVED_WIFI], np[MAX_SAVED_WIFI];
+  int n = 0;
+  ns[n] = ssid; np[n] = pass; n++;                       // mang hien tai len dau
+  for (int i = 0; i < MAX_SAVED_WIFI && n < MAX_SAVED_WIFI; i++) {
+    if (ss[i].length() > 0 && ss[i] != ssid) { ns[n] = ss[i]; np[n] = pp[i]; n++; }
+  }
+  for (int i = 0; i < MAX_SAVED_WIFI; i++) {
+    if (i < n) {
+      prefs.putString(wifiKey("ssid", i).c_str(), ns[i]);
+      prefs.putString(wifiKey("pass", i).c_str(), np[i]);
+    } else {
+      prefs.remove(wifiKey("ssid", i).c_str());
+      prefs.remove(wifiKey("pass", i).c_str());
+    }
+  }
+  Serial.printf("[WIFI] Da nho mang \"%s\" (%d mang trong danh sach)\n", ssid.c_str(), n);
+}
+
+void clearSavedNetworks() {
+  for (int i = 0; i < MAX_SAVED_WIFI; i++) {
+    prefs.remove(wifiKey("ssid", i).c_str());
+    prefs.remove(wifiKey("pass", i).c_str());
+  }
+}
+
+// Thu noi vao cac mang da nho. true neu noi duoc.
+bool connectKnownNetworks(unsigned long timeoutMs) {
+  WiFi.mode(WIFI_STA);
+  if (!wifiMultiReady) {
+    int count = 0;
+    for (int i = 0; i < MAX_SAVED_WIFI; i++) {
+      String ssid = prefs.getString(wifiKey("ssid", i).c_str(), "");
+      if (ssid.length() == 0) continue;
+      String pass = prefs.getString(wifiKey("pass", i).c_str(), "");
+      wifiMulti.addAP(ssid.c_str(), pass.c_str());
+      count++;
+    }
+    if (count == 0) return false;
+    wifiMultiReady = true;
+    Serial.printf("[WIFI] Thu %d mang da nho...\n", count);
+  }
+  return wifiMulti.run(timeoutMs) == WL_CONNECTED;
+}
+// ===================================================================
 
 // Doi serverBase thanh URL dung duoc ngay. Neu host la "xxx.local" thi hoi mDNS
 // de lay IP hien tai cua may do; cac dang khac (IP, ten mien, https) giu nguyen.
@@ -259,6 +335,14 @@ void setupWiFiAndApiKey() {
   deviceId   = prefs.getString("deviceid", "");
   serverBase = prefs.getString("server", serverBase);
 
+  // Doi SERVER_DEFAULT/SERVER_CFG_VER trong code -> ghi de server cu luu trong flash
+  if (prefs.getInt("srvver", 0) != SERVER_CFG_VER) {
+    serverBase = SERVER_DEFAULT;
+    prefs.putString("server", serverBase);
+    prefs.putInt("srvver", SERVER_CFG_VER);
+    Serial.printf("[SETUP] Cap nhat server mac dinh: %s\n", serverBase.c_str());
+  }
+
   // FIX: gioi han cu la 64 ky tu, nhung API key that (tien to "dvk_" + 64 ky
   // tu hex) dai ~68 ky tu nen bi cat, khong nhap du duoc. Tang len 100.
   WiFiManagerParameter customApiKey(
@@ -284,9 +368,11 @@ void setupWiFiAndApiKey() {
   if (digitalRead(PIN_BOOT_BTN) == LOW) {
     Serial.println("[SETUP] Nut BOOT dang giu - xoa config cu");
     wm.resetSettings();
+    clearSavedNetworks();
     prefs.remove("apikey");
     prefs.remove("deviceid");
     prefs.remove("server");
+    apiKey = ""; deviceId = ""; serverBase = SERVER_DEFAULT;
   }
 
   wm.setConfigPortalTimeout(180);
@@ -307,7 +393,17 @@ void setupWiFiAndApiKey() {
 
   // Ten hotspot = deviceLabel rieng cua tung board -> nhieu board
   // bat cung luc se co ten khac nhau tren danh sach WiFi cua dien thoai
-  bool ok = wm.autoConnect(deviceLabel.c_str());
+  // 1) Thu cac mang da nho (nhanh, khong can portal)
+  // 2) Khong mang nao noi duoc -> autoConnect (thu mang cu cua WiFiManager,
+  //    roi mo hotspot de nhap mang moi)
+  bool ok = connectKnownNetworks(20000);
+  if (ok) {
+    Serial.printf("[WIFI] Da noi \"%s\"\n", WiFi.SSID().c_str());
+  } else {
+    ok = wm.autoConnect(deviceLabel.c_str());
+  }
+
+  if (ok) saveCurrentNetwork();   // nho mang vua noi (dua len dau danh sach)
 
   if (!ok) {
     Serial.println("[SETUP] Khong ket noi duoc va het thoi gian cho config.");
@@ -397,6 +493,7 @@ void setup() {
     delay(100);
   }
   Serial.println("[BOOT] Warm-up xong");
+  lastServerOk = millis();   // moc cho watchdog server
   lastPirState = digitalRead(PIN_PIR);
   lastPirLowTime = millis();
 
@@ -540,6 +637,7 @@ void loop() {
     if (now - bootHoldStart > 3000) {
       Serial.println("[RESET] Xoa config, khoi dong lai portal");
       wm.resetSettings();
+      clearSavedNetworks();
       prefs.remove("apikey");
       prefs.remove("deviceid");
       prefs.remove("server");
@@ -550,8 +648,49 @@ void loop() {
     bootHoldStart = 0;
   }
 
+  // ---- WATCHDOG WiFi: mat mang thi tu noi lai, qua lau thi khoi dong lai ----
+  static unsigned long offlineSince = 0, lastWifiTry = 0;
   if (WiFi.status() != WL_CONNECTED) {
+    if (offlineSince == 0) {
+      offlineSince = now;
+      lastWifiTry = 0;
+      Serial.println("[WIFI] Mat ket noi - dang tu noi lai...");
+    }
+    if (now - lastWifiTry >= 10000) {
+      lastWifiTry = now;
+      if (wifiMultiReady) wifiMulti.run(8000);
+      else WiFi.reconnect();
+    }
+    if (now - offlineSince > WIFI_OFFLINE_RESTART_MS) {
+      Serial.println("[WIFI] Mat mang qua lau -> khoi dong lai");
+      delay(300);
+      ESP.restart();
+    }
     delay(200);
+    return;
+  }
+  if (offlineSince != 0) {
+    offlineSince = 0;
+    invalidateServerCache();      // IP may chu co the doi theo mang -> tim lai
+    lastServerOk = now;
+    Serial.printf("[WIFI] Da noi lai \"%s\" - IP %s\n",
+                  WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  }
+
+  // ---- WATCHDOG server: WiFi ok nhung server khong tra loi ----
+  // (Render free ngu dong co the mat 30-60s luc dau nen cho 2 phut moi can thiep)
+  static bool kicked = false;
+  if (apiKey.length() == 0) lastServerOk = now;   // chua co API key thi khong gui gi -> khong theo doi
+  if (now - lastServerOk < SERVER_KICK_MS) kicked = false;
+  if (now - lastServerOk > SERVER_RESTART_MS) {
+    Serial.println("[SERVER] Khong lien lac duoc 10 phut -> khoi dong lai");
+    delay(300);
+    ESP.restart();
+  } else if (!kicked && now - lastServerOk > SERVER_KICK_MS) {
+    kicked = true;
+    Serial.println("[SERVER] Khong lien lac duoc 2 phut -> ngat/noi lai WiFi");
+    invalidateServerCache();
+    WiFi.disconnect();
     return;
   }
 
@@ -613,6 +752,7 @@ void pollCommand() {
   http.setTimeout(5000);
 
   int code = http.GET();
+  if (code > 0) lastServerOk = millis();
   if (code <= 0) invalidateServerCache();   // khong toi duoc server -> lan sau tim lai IP
   bool appliedOutput = false;
   bool appliedSensor = false;
@@ -699,6 +839,7 @@ bool sendMessage(const char* content, const char* type, JsonDocument* deviceData
   Serial.println(body);
 
   int code = http.POST(body);
+  if (code > 0) lastServerOk = millis();
   if (code <= 0) invalidateServerCache();   // khong toi duoc server -> lan sau tim lai IP
   bool ok = (code >= 200 && code < 300);
 

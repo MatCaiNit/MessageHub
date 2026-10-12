@@ -19,7 +19,10 @@ import { validate } from '../middleware/validate.js';
 import { registerDeviceRules, addMemberRules, deviceIdParamRule } from '../validators/deviceValidator.js';
 
 const router = express.Router();
+
 router.get('/:id/command', deviceProtect, getDeviceCommand);
+
+router.get('/command', deviceProtect, getDeviceCommand);
 
 router.use(protect);
 
@@ -41,7 +44,6 @@ router.patch('/:id/regenerate-key', deviceIdParamRule, validate, regenerateApiKe
 // Body: { outputId: 'relay1', state: true }
 router.patch('/:id/command', deviceIdParamRule, validate, setDeviceCommand);
 
-// App gửi lệnh bật/tắt cho 1 CẢM BIẾN cụ thể (không phải output)
 // Body: { sensorId: 'dht', enabled: false }
 router.patch('/:id/sensor-command', deviceIdParamRule, validate, setSensorCommand);
 
