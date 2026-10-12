@@ -3,16 +3,26 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <ESPmDNS.h>
-#include <WiFiClientSecure.h>
-#include <DHT.h>
-#include "Output.h"
-#include "Sensor.h"
+#include <ESPmDNS.h>          // MOI: dung de tim may chay backend theo TEN (vd MAY-CUA-TOI.local)
+                              // thay vi IP - IP doi theo tung mang WiFi, ten may thi khong.
+#include <WiFiClientSecure.h> // MOI: ho tro server https:// (vd khi deploy backend len mang)
+#include <DHT.h>      // Thu vien "DHT sensor library" cua Adafruit - can cai them
+                      // trong Library Manager (Sketch > Include Library > Manage
+                      // Libraries...), tim "DHT sensor library" by Adafruit. No
+                      // se tu doi hoi cai them "Adafruit Unified Sensor" - Arduino
+                      // IDE se hoi cai luon, cu Bam Install.
+#include "Output.h"   // FIX: struct Output phai nam trong header rieng, nap
+                      // truoc khi Arduino IDE tu sinh prototype cho cac ham
+                      // ben duoi - de trong cung 1 file .ino se bi loi
+                      // "Output does not name a type" nhu ban vua gap.
+#include "Sensor.h"   // MOI: struct Sensor, cung ly do nam rieng header nhu Output.h
+
 //  CHÂN GPIO
 #define PIN_PIR      21   // PIR thực tế đang cắm ở D21
 #define PIN_BOOT_BTN 0
 
-
+// ====================== CAM BIEN MOI: NHIET/AM/AM THANH/KHOANG CACH =====
+// Chon chan CHUA dung bang PIR(21)/BOOT(0)/LED(26) o tren.
 #define PIN_DHT       4    // DHT22 (AM2302) - chan DATA, can 1 tro 10k keo len 3.3V
 #define DHT_TYPE      DHT22
 #define PIN_SOUND     34   // KY-038/KY-037 - chan AO (analog). GPIO34 la chan
@@ -28,9 +38,9 @@ DHT dht(PIN_DHT, DHT_TYPE);
 
 #define TELEMETRY_INTERVAL_MS 30000UL   // gui du lieu cam bien moi 30s
 unsigned long lastTelemetryAt = 0;
+// ==========================================================================
 
-
-
+// ====================== DAU RA DIEU KHIEN ON/OFF =============
 Output outputs[] = {
   { "led", 26, false, false },   // LED qua tro 220 ohm, da noi tren D26
 };
@@ -54,9 +64,16 @@ void setOutput(Output* out, bool on) {
   digitalWrite(out->pin, level ? HIGH : LOW);
   Serial.printf("[OUT] %s -> %s\n", out->id, on ? "BAT" : "TAT");
 }
+// ===============================================================
 
-
-
+// ====================== MOI: BAT/TAT TUNG CAM BIEN =============
+// Danh sach cac cam bien co the tam ngung tu app - KHONG lien quan den
+// outputs[] o tren (do la LED/relay). Moi cam bien co "enabled": false
+// nghia la ESP32 se KHONG doc/KHONG gui du lieu cam bien do len server
+// nua, cho den khi app bat lai. Mac dinh moi lan khoi dong lai la BAT HET
+// (giong outputs[] cung reset ve false moi lan reset) - trang thai thuc
+// te luon do pendingSensorCommands tu app dieu khien lai sau khi ESP32 ket
+// noi WiFi va poll lenh lan dau.
 Sensor sensors[] = {
   { "pir",      "Cảm biến chuyển động (PIR)",       true },
   { "dht",      "Nhiệt độ & độ ẩm (DHT22)",          true },
@@ -74,6 +91,9 @@ Sensor* findSensor(const char* id) {
   return nullptr;
 }
 
+// Doc nhanh trang thai bat/tat cua 1 cam bien theo id. Mac dinh TRA VE true
+// (fail-open) neu id khong ton tai trong mang - tranh vo tinh lam "cam" mot
+// cam bien chi vi go sai id o dau do.
 bool sensorEnabled(const char* id) {
   Sensor* sv = findSensor(id);
   return sv ? sv->enabled : true;
@@ -103,14 +123,22 @@ void appendSensorsJson(JsonDocument &doc) {
 }
 // ===================================================================
 
-const unsigned long PIR_LOW_STABLE   = 5000;
-const unsigned long PIR_MIN_INTERVAL = 10000;   // PIR_MIN_INTERVAL da la khoang cach toi thieu ~10s giua 2 lan phat hien
+// FIX dem chuyen dong: bo dieu kien "armed" (phai LOW on dinh 5s) va nang
+// khoang cach toi thieu len 10s. HC-SR501 tu no da co thoi gian giu HIGH
+// (bien tro Time) + ~2.5s khoa sau khi ve LOW, nen 2 lan kich hoat lien tiep
+// da cach nhau >= ~6-13s; them 5s + 10s o ngoai lam chuoi 3 lan gan nhu khong
+// bao gio hoan thanh trong 15s. Gio moi canh LEN (LOW->HIGH) = 1 lan.
+const unsigned long PIR_MIN_INTERVAL = 1000;
 #define DEBUG_PIR_STATE  true
 
-
+// ====================== MOI: CHUOI CHUYEN DONG 3 LAN LIEN TIEP ===
+// Phat hien 3 lan chuyen dong LIEN TIEP, moi lan cach lan truoc khong qua
+// MOTION_GAP_MAX_MS (~10-15s, PIR_MIN_INTERVAL o tren da dam bao toi thieu
+// 10s giua 2 lan) thi nhay LED + bao ve app. Neu lau hon MOTION_GAP_MAX_MS
+// ma khong co lan tiep theo thi coi nhu chuoi bi dut, dem lai tu dau -
 // khong bao gi ca neu chua du 3 lan.
 #define MOTION_SEQ_TARGET    3
-#define MOTION_GAP_MAX_MS    15000UL
+#define MOTION_GAP_MAX_MS    30000UL   // toi da giua 2 lan trong chuoi (nang 15s -> 30s)
 #define MOTION_BLINK_TARGET  "led"
 #define MOTION_BLINK_TIMES   5
 #define MOTION_BLINK_ON_MS   150
@@ -137,8 +165,19 @@ WiFiManager wm;
 // FIX: dat 2 ham nay SAU khi apiKey/deviceId da duoc khai bao o tren (2 bien
 // nay dung ben trong ham) - Arduino chi tu sinh prototype cho HAM, khong
 // giup gi voi thu tu khai bao BIEN toan cuc.
-
-String serverBase     = "http://ManhQuynh.local:3000";   // gia tri mac dinh o portal
+// ====================== MOI: DIA CHI SERVER KHONG PHU THUOC IP ==========
+// FIX loi "doi WiFi la sai IP": truoc day dia chi server gan cung
+// "http://192.168.1.4:3000" - IP cua may chay backend doi theo tung mang WiFi.
+// Gio serverBase nhap 1 LAN trong trang cau hinh WiFi (hotspot cua ESP32) va
+// luu vao flash. Co 2 cach nhap, deu dung duoc o MOI mang WiFi:
+//   1) Ten may:  http://TEN-MAY-TINH.local:3000   (ESP32 tu tim IP qua mDNS
+//      moi lan ket noi - IP doi bao nhieu cung khong anh huong; yeu cau mang
+//      cho phep mDNS, thuong la WiFi nha/hotspot dien thoai)
+//   2) Dia chi cong khai: https://ten-ban.onrender.com  (backend deploy len
+//      mang / ngrok / cloudflare tunnel - chay duoc ca tren WiFi truong hoc,
+//      quan ca phe chan thiet bi thay nhau)
+String serverBase     = "http://ManhQuynh.local:3000";   // gia tri mac dinh (ten may cua ban);
+                                                          // portal/flash neu co se ghi de len day
 String serverResolved = "";   // serverBase sau khi doi ".local" thanh IP (cache)
 
 // Doi serverBase thanh URL dung duoc ngay. Neu host la "xxx.local" thi hoi mDNS
@@ -187,7 +226,7 @@ bool beginHttp(HTTPClient &http, WiFiClient &plain, WiFiClientSecure &secure, co
   }
   return http.begin(plain, url);
 }
-
+// ===================================================================
 
 String messageUrl() { return resolveServerBase() + "/api/messages/device"; }
 String commandUrl() { return resolveServerBase() + "/api/devices/" + deviceId + "/command"; }
@@ -251,6 +290,17 @@ void setupWiFiAndApiKey() {
   }
 
   wm.setConfigPortalTimeout(180);
+
+  // FIX danh sach WiFi bi thieu/gioi han trong trang config:
+  //  - setRemoveDuplicateAPs(false): mac dinh thu vien GOP cac AP trung ten
+  //    (router + repeater/mesh cung SSID) thanh 1 dong -> nhin nhu "thieu".
+  //  - setMinimumSignalQuality(0): khong an mang song yeu (hien ca mang xa).
+  //  - WIFI_STA truoc khi quet: bao dam radio o che do quet day du.
+  // Luu y: ESP32 CHI quet duoc WiFi 2.4 GHz, mang 5 GHz khong bao gio hien.
+  // Mang an SSID (hidden) phai go tay: bam "Configure WiFi" roi nhap ten.
+  WiFi.mode(WIFI_STA);
+  wm.setRemoveDuplicateAPs(false);
+  wm.setMinimumSignalQuality(0);
 
   Serial.printf("[SETUP] Dang ket noi WiFi (hoac mo hotspot \"%s\" de config)...\n",
                 deviceLabel.c_str());
@@ -436,6 +486,10 @@ float readDistanceCm() {
   return duration * 0.0343f / 2.0f;   // van toc am thanh ~343 m/s
 }
 
+// Doc cac cam bien (DHT22/am thanh/sieu am/gas) roi gui 1 goi telemetry duy
+// nhat len server. CHI doc + gui cam bien nao dang sensors[].enabled == true -
+// cam bien da bi "tam tat" tu app se KHONG xuat hien trong readings nua, va
+// Dashboard tren app se tu an the/chi so tuong ung (xem DashboardScreen.js).
 void sendTelemetry() {
   bool dhtOn  = sensorEnabled("dht");
   bool soundOn = sensorEnabled("sound");
@@ -520,24 +574,15 @@ void loop() {
   if (sensorEnabled("pir")) {
     if (DEBUG_PIR_STATE && (now - lastDebugTime > 3000)) {
       lastDebugTime = now;
-      unsigned long lowSince = (currentState == LOW) ? (now - lastPirLowTime) : 0;
-      Serial.printf("[DEBUG] PIR = %s | armed = %s | LOW duoc %lums\n",
+      Serial.printf("[DEBUG] PIR = %s | chuoi = %d/%d\n",
                     currentState == HIGH ? "HIGH" : "LOW",
-                    armed ? "YES" : "NO", lowSince);
+                    motionSeqCount, MOTION_SEQ_TARGET);
     }
 
-    if (currentState == LOW) {
-      if (lastPirState == HIGH) lastPirLowTime = now;
-      if (!armed && (now - lastPirLowTime) >= PIR_LOW_STABLE) {
-        armed = true;
-        Serial.println("[PIR] ✓ Armed");
-      }
-    }
-
+    // Moi canh LEN (LOW -> HIGH) = 1 lan chuyen dong
     if (currentState == HIGH && lastPirState == LOW
-        && armed && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
+        && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
       lastTriggerTime = now;
-      armed = false;
       onMotionDetected();
     }
   }

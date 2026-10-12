@@ -1,7 +1,3 @@
-// frontend/src/screens/DashboardScreen.js
-//
-// Man hinh Dashboard: hien thi cac chi so cam bien (nhiet do, do am, am thanh,
-
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
@@ -15,8 +11,6 @@ import {
 import { deviceApi } from '../api';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 
-// Dinh nghia cac loai cam bien co the co trong deviceData.readings.
-// Chi nhung key nao thuc su xuat hien trong du lieu tra ve moi duoc ve card.
 const SENSOR_META = {
   temperature: { label: 'Nhiệt độ', icon: '🌡️', unit: '°C', color: '#F97316', decimals: 1 },
   humidity:    { label: 'Độ ẩm',    icon: '💧', unit: '%',  color: '#3B82F6', decimals: 0 },
@@ -24,6 +18,15 @@ const SENSOR_META = {
   distanceCm:  { label: 'Khoảng cách (vật thể)', icon: '📏', unit: 'cm', color: '#22C55E', decimals: 0 },
   gasLevel:    { label: 'Khí gas / khói', icon: '🧯', unit: '', color: '#EF4444', decimals: 0 },
 };
+
+// Cac khoang thoi gian. poll = chu ky tu lam moi (ms).
+const RANGES = [
+  { id: 'live', label: 'Trực tiếp', poll: 15000 },
+  { id: '1h',   label: '1 giờ',     poll: 60000 },
+  { id: '6h',   label: '6 giờ',     poll: 60000 },
+  { id: '24h',  label: '24 giờ',    poll: 120000 },
+  { id: '7d',   label: '7 ngày',    poll: 300000 },
+];
 
 function formatTimeAgo(dateStr) {
   if (!dateStr) return 'chưa có dữ liệu';
@@ -37,42 +40,99 @@ function formatTimeAgo(dateStr) {
   return new Date(dateStr).toLocaleString('vi-VN');
 }
 
+const pad2 = (n) => String(n).padStart(2, '0');
+
 function formatClock(dateStr) {
   if (!dateStr) return '';
-  return new Date(dateStr).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  const d = new Date(dateStr);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+// Nhan duoi truc: khoang ngan -> gio:phut; khoang dai -> ngay/thang + gio.
+function formatAxisLabel(dateStr, range) {
+  const d = new Date(dateStr);
+  if (range === '24h' || range === '7d') {
+    return [`${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}`, `${pad2(d.getHours())}:${pad2(d.getMinutes())}`];
+  }
+  return [formatClock(dateStr)];
+}
+
+function formatFull(dateStr) {
+  const d = new Date(dateStr);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())} ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}`;
 }
 
 function fmtValue(v, decimals) {
   return typeof v === 'number' ? v.toFixed(decimals) : '--';
 }
 
-// ─── Bieu do duong chi tiet: tung moc gia tri cu the, bam vao 1 diem de xem ──
-const POINT_GAP = 56;       // khoang cach ngang giua 2 moc
-const CHART_H = 150;        // chieu cao vung ve (khong tinh nhan gio ben duoi)
-const TOP_PAD = 26;         // chua nhan gia tri phia tren diem cao nhat
-const BOTTOM_PAD = 14;      // chua diem thap nhat
-const SIDE_PAD = 20;
+// ─── Bieu do duong chi tiet ────────────────────────────────────────────────
+const MIN_GAP = 46;         // khoang cach ngang toi thieu giua 2 moc
+const MAX_GAP = 80;         // toi da (khi it diem)
+const CHART_H = 150;        // chieu cao vung ve
+const LABEL_H = 28;         // vung nhan thoi gian ben duoi (toi da 2 dong)
+const TOP_PAD = 26;
+const BOTTOM_PAD = 12;
+const SIDE_PAD = 24;
 
-function LineChartDetail({ points, color, unit, decimals }) {
-  const [selected, setSelected] = useState(points.length - 1);
+function LineChartDetail({ points, color, unit, decimals, range }) {
+  const [selected, setSelected] = useState(Math.max(0, points.length - 1));
+  const [viewW, setViewW] = useState(0);
+  const scrollRef = useRef(null);
+  const offsetRef = useRef(0);
+  const nearEndRef = useRef(true);   // nguoi dung dang o cuoi (diem moi nhat)?
+  const prevLenRef = useRef(points.length);
+
+  // Khi co them diem moi: neu dang chon diem cuoi thi chon luon diem moi cuoi
+  useEffect(() => {
+    const prevLen = prevLenRef.current;
+    if (selected >= prevLen - 1 || selected > points.length - 1) {
+      setSelected(Math.max(0, points.length - 1));
+    }
+    prevLenRef.current = points.length;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [points.length]);
+
+  const gap = useMemo(() => {
+    if (points.length <= 1) return MAX_GAP;
+    if (!viewW) return MIN_GAP;
+    const fit = (viewW - SIDE_PAD * 2) / (points.length - 1);
+    return Math.max(MIN_GAP, Math.min(MAX_GAP, fit));
+  }, [points.length, viewW]);
 
   const { positions, min, max } = useMemo(() => {
     const values = points.map((p) => p.value);
     let mn = Math.min(...values);
     let mx = Math.max(...values);
-    if (mn === mx) { mn -= 1; mx += 1; } // tranh chia 0 khi tat ca gia tri bang nhau
+    if (mn === mx) { mn -= 1; mx += 1; }
     const innerH = CHART_H - TOP_PAD - BOTTOM_PAD;
     const pos = points.map((p, i) => ({
-      x: SIDE_PAD + i * POINT_GAP,
+      x: SIDE_PAD + i * gap,
       y: TOP_PAD + innerH - ((p.value - mn) / (mx - mn)) * innerH,
       value: p.value,
       time: p.time,
     }));
     return { positions: pos, min: mn, max: mx };
-  }, [points]);
+  }, [points, gap]);
 
-  const width = SIDE_PAD * 2 + Math.max(0, points.length - 1) * POINT_GAP;
+  const contentW = Math.max(SIDE_PAD * 2 + Math.max(0, points.length - 1) * gap, viewW || 240);
   const activePoint = positions[selected];
+
+  const scrollToEnd = (animated = false) => {
+    if (scrollRef.current) scrollRef.current.scrollToEnd({ animated });
+  };
+  const scrollByX = (dx) => {
+    const x = Math.max(0, Math.min(contentW - viewW, offsetRef.current + dx));
+    if (scrollRef.current) scrollRef.current.scrollTo({ x, animated: true });
+  };
+
+  const onScroll = (e) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    offsetRef.current = contentOffset.x;
+    nearEndRef.current = contentOffset.x + layoutMeasurement.width >= contentSize.width - 40;
+  };
+
+  const canScroll = contentW > viewW + 4;
 
   return (
     <View style={dc.wrap}>
@@ -81,13 +141,23 @@ function LineChartDetail({ points, color, unit, decimals }) {
           <Text style={[dc.calloutValue, { color }]}>
             {fmtValue(activePoint.value, decimals)}{unit ? ` ${unit}` : ''}
           </Text>
-          <Text style={dc.calloutTime}>lúc {formatClock(activePoint.time)}</Text>
+          <Text style={dc.calloutTime}>lúc {formatFull(activePoint.time)}</Text>
         </View>
       )}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingVertical: 4 }}>
-        <View style={{ width: Math.max(width, 240), height: CHART_H }}>
-          {/* Duong noi giua cac diem - moi doan la 1 thanh xoay quanh tam */}
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={canScroll}
+        scrollEventThrottle={32}
+        onScroll={onScroll}
+        onLayout={(e) => setViewW(e.nativeEvent.layout.width)}
+        // Luon cuon den diem MOI NHAT khi noi dung thay doi (mo bieu do, doi
+        // khoang thoi gian, co diem moi) - tru khi nguoi dung dang xem doan cu.
+        onContentSizeChange={() => { if (nearEndRef.current) scrollToEnd(false); }}
+        contentContainerStyle={{ paddingVertical: 4 }}
+      >
+        <View style={{ width: contentW, height: CHART_H + LABEL_H }}>
           {positions.slice(1).map((p2, idx) => {
             const p1 = positions[idx];
             const dx = p2.x - p1.x;
@@ -113,11 +183,14 @@ function LineChartDetail({ points, color, unit, decimals }) {
             );
           })}
 
-          {/* Tung moc: cham + nhan gia tri phia tren + nhan gio phia duoi */}
           {positions.map((p, i) => {
             const isSelected = i === selected;
+            const lines = formatAxisLabel(p.time, range);
             return (
-              <View key={i} style={{ position: 'absolute', left: p.x - 24, top: 0, width: 48, height: CHART_H, alignItems: 'center' }}>
+              <View
+                key={i}
+                style={{ position: 'absolute', left: p.x - 24, top: 0, width: 48, height: CHART_H + LABEL_H, alignItems: 'center' }}
+              >
                 <Text
                   numberOfLines={1}
                   style={[dc.pointValue, isSelected && { color, fontWeight: '800' }]}
@@ -137,30 +210,51 @@ function LineChartDetail({ points, color, unit, decimals }) {
                     ]}
                   />
                 </TouchableOpacity>
-                <Text numberOfLines={1} style={dc.pointTime}>{formatClock(p.time)}</Text>
+                <View style={{ position: 'absolute', top: CHART_H + 2, alignItems: 'center' }}>
+                  {lines.map((ln, li) => (
+                    <Text key={li} numberOfLines={1} style={dc.pointTime}>{ln}</Text>
+                  ))}
+                </View>
               </View>
             );
           })}
         </View>
       </ScrollView>
 
-      <View style={dc.rangeRow}>
-        <Text style={dc.rangeText}>Thấp nhất: {fmtValue(min, decimals)}{unit}</Text>
-        <Text style={dc.rangeText}>Cao nhất: {fmtValue(max, decimals)}{unit}</Text>
+      <View style={dc.navRow}>
+        <Text style={dc.rangeText}>
+          Thấp: {fmtValue(min, decimals)}{unit}  ·  Cao: {fmtValue(max, decimals)}{unit}  ·  {points.length} điểm
+        </Text>
+        {canScroll && (
+          <View style={dc.navBtns}>
+            <TouchableOpacity style={dc.navBtn} onPress={() => { nearEndRef.current = false; scrollByX(-viewW * 0.7); }}>
+              <Text style={dc.navBtnText}>◀</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={dc.navBtn} onPress={() => scrollByX(viewW * 0.7)}>
+              <Text style={dc.navBtnText}>▶</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[dc.navBtn, { paddingHorizontal: 10 }]}
+              onPress={() => { nearEndRef.current = true; scrollToEnd(true); setSelected(Math.max(0, points.length - 1)); }}
+            >
+              <Text style={dc.navBtnText}>Mới nhất ⏭</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     </View>
   );
 }
 
-function SensorCard({ sensorKey, latestValue, history, expanded, onToggle }) {
+function SensorCard({ sensorKey, latestValue, history, stat, rangeLabel, range, expanded, onToggle }) {
   const meta = SENSOR_META[sensorKey] || { label: sensorKey, icon: '📟', unit: '', color: C.accent, decimals: 1 };
-  const numericValues = history.map((h) => h.value).filter((v) => typeof v === 'number');
 
-  const avg = numericValues.length
-    ? numericValues.reduce((a, b) => a + b, 0) / numericValues.length
-    : null;
-  const min = numericValues.length ? Math.min(...numericValues) : null;
-  const max = numericValues.length ? Math.max(...numericValues) : null;
+  // Uu tien thong ke tu server (tinh tren du lieu goc cua ca khoang); neu
+  // khong co thi tinh tu cac diem dang co.
+  const numericValues = history.map((h) => h.value).filter((v) => typeof v === 'number');
+  const avg = stat ? stat.avg : (numericValues.length ? numericValues.reduce((a, b) => a + b, 0) / numericValues.length : null);
+  const min = stat ? stat.min : (numericValues.length ? Math.min(...numericValues) : null);
+  const max = stat ? stat.max : (numericValues.length ? Math.max(...numericValues) : null);
 
   return (
     <TouchableOpacity
@@ -186,17 +280,29 @@ function SensorCard({ sensorKey, latestValue, history, expanded, onToggle }) {
           <Text style={s.statText}>Thấp: {fmtValue(min, meta.decimals)}</Text>
           <Text style={s.statDot}>·</Text>
           <Text style={s.statText}>Cao: {fmtValue(max, meta.decimals)}</Text>
+          <Text style={s.statRange}>({rangeLabel})</Text>
         </View>
       ) : (
-        <Text style={s.statTextMuted}>Chưa đủ dữ liệu để tính trung bình</Text>
+        <Text style={s.statTextMuted}>Chưa có dữ liệu trong {rangeLabel.toLowerCase()}</Text>
       )}
 
       {expanded && (
-        history.length > 0 ? (
-          <LineChartDetail points={history} color={meta.color} unit={meta.unit} decimals={meta.decimals} />
-        ) : (
-          <Text style={s.statTextMuted}>Chưa có lịch sử để vẽ biểu đồ</Text>
-        )
+        <View onStartShouldSetResponder={() => true}>
+          {history.length > 0 ? (
+            <LineChartDetail
+              key={range}
+              points={history}
+              color={meta.color}
+              unit={meta.unit}
+              decimals={meta.decimals}
+              range={range}
+            />
+          ) : (
+            <Text style={[s.statTextMuted, { marginTop: 10 }]}>
+              Không có dữ liệu trong khoảng này — thử chọn khoảng thời gian dài hơn.
+            </Text>
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -205,12 +311,16 @@ function SensorCard({ sensorKey, latestValue, history, expanded, onToggle }) {
 export default function DashboardScreen() {
   const [devices, setDevices] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [telemetry, setTelemetry] = useState(null); // { readings: [...], latest, latestAt }
+  const [range, setRange] = useState('live');
+  const [telemetry, setTelemetry] = useState(null); // { range, readings, stats, latest, latestAt }
   const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [expandedKeys, setExpandedKeys] = useState(() => new Set());
   const pollRef = useRef(null);
+  const reqIdRef = useRef(0);
+  const lastDeviceRef = useRef(null);
 
   const toggleExpanded = (key) => {
     setExpandedKeys((prev) => {
@@ -233,17 +343,24 @@ export default function DashboardScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
-  const loadTelemetry = useCallback(async (deviceId) => {
+  const loadTelemetry = useCallback(async (deviceId, rangeId) => {
     if (!deviceId) return;
+    const myReq = ++reqIdRef.current;   // bo qua phan hoi cu ve tre khi da doi range/thiet bi
+    setFetching(true);
     try {
-      const res = await deviceApi.getTelemetry(deviceId, 30);
+      const res = await deviceApi.getTelemetry(deviceId, { range: rangeId, limit: 60 });
+      if (myReq !== reqIdRef.current) return;
       setTelemetry(res.data);
       setError('');
     } catch (e) {
+      if (myReq !== reqIdRef.current) return;
       setError('Không tải được dữ liệu cảm biến của thiết bị này');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (myReq === reqIdRef.current) {
+        setLoading(false);
+        setFetching(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -253,35 +370,39 @@ export default function DashboardScreen() {
 
   useEffect(() => {
     if (!selectedId) return;
-    setLoading(true);
-    loadTelemetry(selectedId);
+    // Doi thiet bi -> xoa du lieu cu; doi khoang thoi gian -> giu du lieu cu
+    // den khi du lieu moi ve (khong nhay man hinh).
+    if (lastDeviceRef.current !== selectedId) {
+      lastDeviceRef.current = selectedId;
+      setLoading(true);
+      setTelemetry(null);
+    }
+    loadTelemetry(selectedId, range);
 
-    // Tu dong lam moi moi 15s de "dashboard" luon cap nhat, khop voi chu ky
-    // gui telemetry 30s cua ESP32 (poll nhanh hon de bat kip ban ghi moi).
+    const poll = (RANGES.find((r) => r.id === range) || RANGES[0]).poll;
     if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => loadTelemetry(selectedId), 15000);
+    pollRef.current = setInterval(() => loadTelemetry(selectedId, range), poll);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [selectedId, loadTelemetry]);
+  }, [selectedId, range, loadTelemetry]);
 
   const onRefresh = () => {
     setRefreshing(true);
     loadDevices();
-    loadTelemetry(selectedId);
+    loadTelemetry(selectedId, range);
   };
 
-  // Gop danh sach cac loai cam bien THUC SU co du lieu (tu latest hoac tu lich su)
   const availableSensorKeys = useMemo(() => {
     const keys = new Set();
     if (telemetry?.latest) Object.keys(telemetry.latest).forEach((k) => keys.add(k));
     (telemetry?.readings || []).forEach((r) => Object.keys(r.readings || {}).forEach((k) => keys.add(k)));
-    // Uu tien thu tu quen thuoc, cac key la khac xep sau
     const order = ['temperature', 'humidity', 'soundLevel', 'distanceCm', 'gasLevel'];
     return [...order.filter((k) => keys.has(k)), ...[...keys].filter((k) => !order.includes(k))];
   }, [telemetry]);
 
   const selectedDevice = devices.find((d) => d._id === selectedId);
+  const rangeLabel = (RANGES.find((r) => r.id === range) || RANGES[0]).label;
 
   const disabledSensorLabels = useMemo(() => {
     return (selectedDevice?.sensors || [])
@@ -298,8 +419,6 @@ export default function DashboardScreen() {
         )}
       </View>
 
-      {/* MOI: canh bao cam bien dang bi TAM TAT (dieu khien tu tab Thiet bi) -
-          giup giai thich vi sao mot chi so khong co du lieu moi. */}
       {disabledSensorLabels.length > 0 && (
         <View style={s.disabledBanner}>
           <Text style={s.disabledBannerText}>
@@ -329,6 +448,29 @@ export default function DashboardScreen() {
           })}
         </ScrollView>
       )}
+
+      {/* Chon khoang thoi gian cho TAT CA the/bieu do */}
+      <View style={s.rangeBar}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ paddingHorizontal: 16, gap: 8, alignItems: 'center' }}
+        >
+          {RANGES.map((r) => {
+            const active = r.id === range;
+            return (
+              <TouchableOpacity
+                key={r.id}
+                style={[s.rangeChip, active && s.rangeChipActive]}
+                onPress={() => setRange(r.id)}
+              >
+                <Text style={[s.rangeChipText, active && s.rangeChipTextActive]}>{r.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+          {fetching && !loading && <ActivityIndicator size="small" color={C.accent} />}
+        </ScrollView>
+      </View>
 
       <ScrollView
         contentContainerStyle={s.body}
@@ -366,6 +508,9 @@ export default function DashboardScreen() {
                     sensorKey={key}
                     latestValue={telemetry?.latest?.[key]}
                     history={history}
+                    stat={telemetry?.stats?.[key]}
+                    rangeLabel={rangeLabel}
+                    range={range}
                     expanded={expanded}
                     onToggle={() => toggleExpanded(key)}
                   />
@@ -405,6 +550,19 @@ const s = StyleSheet.create({
   chipText: { fontSize: FONT.sm, color: C.dim, fontWeight: '600' },
   chipTextActive: { color: C.accentText },
 
+  rangeBar: { height: 40, marginBottom: 2 },
+  rangeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: RADIUS.full,
+    backgroundColor: C.panel,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  rangeChipActive: { backgroundColor: C.accent, borderColor: C.accent },
+  rangeChipText: { fontSize: FONT.xs, color: C.dim, fontWeight: '700' },
+  rangeChipTextActive: { color: '#fff' },
+
   body: { padding: 16, paddingTop: 8 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between' },
   gridItemHalf: { width: '48%' },
@@ -429,6 +587,7 @@ const s = StyleSheet.create({
   statsRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 },
   statText: { fontSize: FONT.xs, color: C.dim, fontWeight: '600' },
   statDot: { fontSize: FONT.xs, color: C.dim },
+  statRange: { fontSize: FONT.xs, color: C.dim, fontStyle: 'italic' },
   statTextMuted: { fontSize: FONT.xs, color: C.dim, fontStyle: 'italic' },
 
   emptyWrap: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 24 },
@@ -439,7 +598,6 @@ const s = StyleSheet.create({
   errorText: { color: C.danger, textAlign: 'center', marginTop: 24 },
 });
 
-// ─── Styles rieng cho bieu do duong chi tiet (LineChartDetail) ──────────────
 const dc = StyleSheet.create({
   wrap: { marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.borderLight },
   callout: {
@@ -450,12 +608,22 @@ const dc = StyleSheet.create({
   calloutTime: { fontSize: FONT.xs, color: C.dim },
 
   pointValue: { fontSize: 10, fontWeight: '700', color: C.text, marginBottom: 2 },
-  pointTime: { position: 'absolute', bottom: 0, fontSize: 9, color: C.dim },
+  pointTime: { fontSize: 9, color: C.dim },
   dot: {
     width: 11, height: 11, borderRadius: 6,
     backgroundColor: C.panel, borderWidth: 2,
   },
 
-  rangeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
+  navRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    flexWrap: 'wrap', gap: 6, marginTop: 6,
+  },
   rangeText: { fontSize: FONT.xs, color: C.dim, fontWeight: '600' },
+  navBtns: { flexDirection: 'row', gap: 6 },
+  navBtn: {
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: RADIUS.full, backgroundColor: C.panel2,
+    borderWidth: 1, borderColor: C.border,
+  },
+  navBtnText: { fontSize: FONT.xs, color: C.dim, fontWeight: '700' },
 });

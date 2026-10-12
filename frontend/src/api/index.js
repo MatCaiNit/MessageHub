@@ -100,15 +100,28 @@ export const deviceApi = {
     client.post(`/api/devices/${deviceId}/members`, { deviceId: otherDeviceId }),
   removeMember: (deviceId, userId) => client.delete(`/api/devices/${deviceId}/members/${userId}`),
 
+  // FIX: ham cu dung `axiosInstance` (khong ton tai trong file nay - moi noi
+  // khac deu dung `client`) va gui { command } dang string. Backend that
+  // (setDeviceCommand) doc { outputId, state } cho tung dau ra rieng biet,
+  // va thieu tien to /api nen request se rot vao path sai (vd https://host/devices/...
+  // thay vi https://host/api/devices/...).
   sendCommand: (deviceId, outputId, state) =>
     client.patch(`/api/devices/${deviceId}/command`, { outputId, state }),
 
+  // MOI: bat/tat MOT CAM BIEN cu the (DHT22, am thanh, sieu am, gas, PIR...),
+  // khac voi sendCommand o tren la danh cho dau ra (LED/relay).
   sendSensorCommand: (deviceId, sensorId, enabled) =>
     client.patch(`/api/devices/${deviceId}/sensor-command`, { sensorId, enabled }),
 
   // Dashboard: lich su cac lan doc cam bien (nhiet do, do am, am thanh, khoang cach...)
-  getTelemetry: (deviceId, limit = 50) =>
-    client.get(`/api/devices/${deviceId}/telemetry?limit=${limit}`),
+  // opts: so (limit, tuong thich cu) hoac { range: 'live'|'1h'|'6h'|'24h'|'7d', limit }
+  getTelemetry: (deviceId, opts = {}) => {
+    const o = typeof opts === 'number' ? { limit: opts } : opts;
+    const params = [];
+    if (o.range && o.range !== 'live') params.push(`range=${encodeURIComponent(o.range)}`);
+    if (o.limit) params.push(`limit=${o.limit}`);
+    return client.get(`/api/devices/${deviceId}/telemetry${params.length ? `?${params.join('&')}` : ''}`);
+  },
 };
 
 // ─── SYNC ────────────────────────────────────────────────────────────────────

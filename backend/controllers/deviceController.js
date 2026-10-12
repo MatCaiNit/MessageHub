@@ -271,7 +271,14 @@ export const setDeviceCommand = async (req, res) => {
   }
 };
 
-
+/**
+ * ================== MOI: BAT/TAT TUNG CAM BIEN ==================
+ * App bam nut on/off cho 1 CAM BIEN (khong phai dau ra) -> ghi lenh cho
+ * vao hang doi rieng pendingSensorCommands, giong het setDeviceCommand o
+ * tren nhung cho sensors[] thay vi outputs[].
+ * Route: PATCH /api/devices/:id/sensor-command   (middleware: protect - JWT)
+ * Body : { sensorId: 'dht', enabled: false }
+ */
 export const setSensorCommand = async (req, res) => {
   try {
     const { sensorId, enabled } = req.body;
@@ -320,7 +327,17 @@ export const setSensorCommand = async (req, res) => {
     res.status(500).json({ message: 'Loi server', error: err.message });
   }
 };
+// ===================================================================
 
+/**
+ * ESP32 poll dinh ky de lay cac lenh dang cho; lay xong thi clear.
+ * Route: GET /api/devices/:id/command   (middleware: deviceProtect - X-Device-Key)
+ * Tra  : { commands: [ { outputId, state } ], sensorCommands: [ { sensorId, enabled } ] }
+ *
+ * MOI: tra them sensorCommands trong CUNG 1 lan poll (ESP32 khong can goi
+ * them request rieng cho cam bien) - giu nguyen field "commands" cu de
+ * khong pha firmware/App ban nao chi biet doc outputs.
+ */
 export const getDeviceCommand = async (req, res) => {
   try {
     // deviceProtect gan req.device sau khi so khop X-Device-Key
@@ -355,7 +372,13 @@ export const getDeviceCommand = async (req, res) => {
   }
 };
 
-
+/**
+ * App doi chieu trang thai thuc (device.outputs[].state, device.sensors[].enabled)
+ * sau khi gui lenh.
+ * Route: GET /api/devices/:id   (middleware: protect - JWT)
+ *
+ * FIX: cung loi device.owner/req.user nhu setDeviceCommand o tren.
+ */
 export const getDeviceById = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id).select('-apiKeyHash');
@@ -371,7 +394,15 @@ export const getDeviceById = async (req, res) => {
   }
 };
 
-
+/**
+ * Lich su cac lan doc cam bien (dung de ve bieu do tren Dashboard).
+ * Route: GET /api/devices/:id/telemetry?limit=50   (middleware: protect - JWT)
+ * Tra  : { readings: [ { readings: {...}, createdAt } ], latest: {...}, latestAt } theo
+ *        thu tu THOI GIAN TANG DAN (cu -> moi), tien cho viec ve truc X tren bieu do.
+ *
+ * Du lieu lay tu Message (type: 'device_telemetry'), khong can them collection rieng
+ * vi sendDeviceMessage() da luu 1 Message cho moi lan telemetry gui len.
+ */
 export const getDeviceTelemetryHistory = async (req, res) => {
   try {
     const device = await Device.findById(req.params.id).select('ownerId conversationId lastTelemetry lastTelemetryAt');
@@ -382,26 +413,107 @@ export const getDeviceTelemetryHistory = async (req, res) => {
       return res.status(403).json({ message: 'Khong co quyen xem thiet bi nay' });
     }
 
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    // ?range=live (mac dinh) | 1h | 6h | 24h | 7d
+    //  - live : N ban ghi moi nhat (?limit=, toi da 200), moi ban ghi 1 diem
+    //  - con lai: lay TOAN BO ban ghi trong khoang thoi gian, gop thanh toi da
+    //    ~30-56 "xo" (bucket) theo thoi gian, moi xo = trung binh -> bieu do
+    //    luon phu het khoang thoi gian da chon, khong bi cat o 30 ban ghi cuoi.
+    const RANGES = {
+      '1h':  { ms: 60 * 60 * 1000,           buckets: 30 },
+      '6h':  { ms: 6 * 60 * 60 * 1000,       buckets: 36 },
+      '24h': { ms: 24 * 60 * 60 * 1000,      buckets: 48 },
+      '7d':  { ms: 7 * 24 * 60 * 60 * 1000,  buckets: 56 },
+    };
+    const range = RANGES[req.query.range] ? req.query.range : 'live';
 
-    const messages = await Message.find({
-      conversationId: device.conversationId,
-      type: 'device_telemetry',
-    })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .select('deviceData createdAt');
+    let rawPoints; // [{ t: ms, r: {key: value} }] tang dan theo thoi gian
 
-    // Dao lai thanh thu tu tang dan (cu -> moi) cho de ve bieu do
-    const readings = messages
-      .reverse()
-      .map((m) => ({
-        readings: m.deviceData?.readings || {},
-        createdAt: m.createdAt,
+    if (range === 'live') {
+      const limit = Math.min(parseInt(req.query.limit, 10) || 60, 200);
+      const messages = await Message.find({
+        conversationId: device.conversationId,
+        type: 'device_telemetry',
+      })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .select('deviceData createdAt')
+        .lean();
+      rawPoints = messages.reverse().map((m) => ({
+        t: new Date(m.createdAt).getTime(),
+        r: m.deviceData?.readings || {},
       }));
+    } else {
+      const cfg = RANGES[range];
+      const since = new Date(Date.now() - cfg.ms);
+      // 7 ngay * 2 ban ghi/phut ~ 20160 -> tran 30000 de an toan bo nho
+      const messages = await Message.find({
+        conversationId: device.conversationId,
+        type: 'device_telemetry',
+        createdAt: { $gte: since },
+      })
+        .sort({ createdAt: 1 })
+        .limit(30000)
+        .select('deviceData createdAt')
+        .lean();
+      rawPoints = messages.map((m) => ({
+        t: new Date(m.createdAt).getTime(),
+        r: m.deviceData?.readings || {},
+      }));
+    }
+
+    // Thong ke (TB / thap nhat / cao nhat) tinh tren DU LIEU GOC, khong phai
+    // tren du lieu da gop xo -> so lieu chinh xac cho ca khoang thoi gian.
+    const acc = {};
+    rawPoints.forEach((p) => {
+      Object.entries(p.r).forEach(([k, v]) => {
+        if (typeof v !== 'number' || !Number.isFinite(v)) return;
+        if (!acc[k]) acc[k] = { sum: 0, min: v, max: v, count: 0 };
+        acc[k].sum += v;
+        acc[k].count += 1;
+        if (v < acc[k].min) acc[k].min = v;
+        if (v > acc[k].max) acc[k].max = v;
+      });
+    });
+    const stats = {};
+    Object.entries(acc).forEach(([k, a]) => {
+      stats[k] = { avg: a.sum / a.count, min: a.min, max: a.max, count: a.count };
+    });
+
+    let readings;
+    if (range === 'live') {
+      readings = rawPoints.map((p) => ({ readings: p.r, createdAt: new Date(p.t) }));
+    } else {
+      const cfg = RANGES[range];
+      const bucketMs = cfg.ms / cfg.buckets;
+      const start = Date.now() - cfg.ms;
+      const buckets = new Map(); // index -> { tSum, n, sums: {k: {s, c}} }
+      rawPoints.forEach((p) => {
+        const idx = Math.min(cfg.buckets - 1, Math.max(0, Math.floor((p.t - start) / bucketMs)));
+        if (!buckets.has(idx)) buckets.set(idx, { tSum: 0, n: 0, sums: {} });
+        const b = buckets.get(idx);
+        b.tSum += p.t;
+        b.n += 1;
+        Object.entries(p.r).forEach(([k, v]) => {
+          if (typeof v !== 'number' || !Number.isFinite(v)) return;
+          if (!b.sums[k]) b.sums[k] = { s: 0, c: 0 };
+          b.sums[k].s += v;
+          b.sums[k].c += 1;
+        });
+      });
+      readings = [...buckets.keys()]
+        .sort((a, b) => a - b)
+        .map((idx) => {
+          const b = buckets.get(idx);
+          const r = {};
+          Object.entries(b.sums).forEach(([k, a]) => { r[k] = a.s / a.c; });
+          return { readings: r, createdAt: new Date(b.tSum / b.n), samples: b.n };
+        });
+    }
 
     res.json({
+      range,
       readings,
+      stats,
       latest: device.lastTelemetry || null,
       latestAt: device.lastTelemetryAt || null,
     });
