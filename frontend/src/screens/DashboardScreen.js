@@ -17,6 +17,18 @@ const SENSOR_META = {
   soundLevel:  { label: 'Âm thanh', icon: '🔊', unit: '',   color: '#A855F7', decimals: 0 },
   distanceCm:  { label: 'Khoảng cách (vật thể)', icon: '📏', unit: 'cm', color: '#22C55E', decimals: 0 },
   gasLevel:    { label: 'Khí gas / khói', icon: '🧯', unit: '', color: '#EF4444', decimals: 0 },
+  // ---- Cảm biến mở rộng ----
+  pressureHpa:    { label: 'Áp suất khí quyển', icon: '🌀', unit: 'hPa', color: '#0EA5E9', decimals: 1 },
+  bmeTemperature: { label: 'Nhiệt độ (BME280)', icon: '🌡️', unit: '°C',  color: '#FB923C', decimals: 1 },
+  bmeHumidity:    { label: 'Độ ẩm KK (BME280)', icon: '💧', unit: '%',   color: '#60A5FA', decimals: 0 },
+  lightLux:       { label: 'Ánh sáng',          icon: '☀️', unit: 'lux', color: '#EAB308', decimals: 0 },
+  busVoltage:     { label: 'Điện áp',           icon: '🔌', unit: 'V',   color: '#14B8A6', decimals: 2 },
+  currentMa:      { label: 'Dòng điện',         icon: '⚡', unit: 'mA',  color: '#F43F5E', decimals: 0 },
+  powerMw:        { label: 'Công suất',         icon: '🔋', unit: 'mW',  color: '#8B5CF6', decimals: 0 },
+  rainPercent:    { label: 'Mưa',               icon: '🌧️', unit: '%',   color: '#38BDF8', decimals: 0 },
+  soilPercent:    { label: 'Độ ẩm đất',         icon: '🌱', unit: '%',   color: '#16A34A', decimals: 0 },
+  waterPercent:   { label: 'Mực nước',          icon: '🚰', unit: '%',   color: '#2563EB', decimals: 0 },
+  co2Ppm:         { label: 'CO₂',               icon: '🫧', unit: 'ppm', color: '#64748B', decimals: 0 },
 };
 
 // Cac khoang thoi gian. poll = chu ky tu lam moi (ms).
@@ -395,9 +407,15 @@ export default function DashboardScreen() {
 
   const availableSensorKeys = useMemo(() => {
     const keys = new Set();
-    if (telemetry?.latest) Object.keys(telemetry.latest).forEach((k) => keys.add(k));
-    (telemetry?.readings || []).forEach((r) => Object.keys(r.readings || {}).forEach((k) => keys.add(k)));
-    const order = ['temperature', 'humidity', 'soundLevel', 'distanceCm', 'gasLevel'];
+    const latestKeys = telemetry?.latest ? Object.keys(telemetry.latest) : [];
+    if (latestKeys.length > 0) {
+      latestKeys.forEach((k) => keys.add(k));
+    } else {
+      (telemetry?.readings || []).forEach((r) => Object.keys(r.readings || {}).forEach((k) => keys.add(k)));
+    }
+    const order = ['temperature', 'humidity', 'soundLevel', 'distanceCm', 'gasLevel',
+      'pressureHpa', 'bmeTemperature', 'bmeHumidity', 'lightLux', 'busVoltage', 'currentMa',
+      'powerMw', 'rainPercent', 'soilPercent', 'waterPercent', 'co2Ppm'];
     return [...order.filter((k) => keys.has(k)), ...[...keys].filter((k) => !order.includes(k))];
   }, [telemetry]);
 
@@ -406,7 +424,7 @@ export default function DashboardScreen() {
 
   const disabledSensorLabels = useMemo(() => {
     return (selectedDevice?.sensors || [])
-      .filter((sv) => sv.enabled === false)
+      .filter((sv) => sv.enabled === false && sv.present !== false)
       .map((sv) => sv.label || sv.sensorId);
   }, [selectedDevice]);
 

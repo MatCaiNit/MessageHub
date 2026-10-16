@@ -474,6 +474,7 @@ const handleToggleSensor = async (device, sensor) => {
     }
   }, 8000);
 };
+// ===================================================================
 
   const load = useCallback(async () => {
     try {
@@ -487,6 +488,18 @@ const handleToggleSensor = async (device, sensor) => {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Tu lam moi danh sach thiet bi moi 15s de thay doi tu ESP32 (cam bien duoc
+  // cam/thao -> present, bat/tat...) hien ra ma khong can F5. Bo qua luc dang cho
+  // xac nhan 1 nut bat/tat (pendingKeys) de khong ghi de trang thai lac quan.
+  const pendingRef = useRef([]);
+  useEffect(() => { pendingRef.current = pendingKeys; }, [pendingKeys]);
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (pendingRef.current.length === 0) load();
+    }, 15000);
+    return () => clearInterval(t);
+  }, [load]);
 
   const handleCreate = async (name, hubConversationId) => {
   try {
@@ -605,9 +618,10 @@ const handleToggleSensor = async (device, sensor) => {
       ) : null}
 
       {/* MOI: 1 nut bat/tam tat cho tung CAM BIEN cua thiet bi (khac voi output) */}
-      {d.sensors?.length ? (
+      {/* An cam bien ESP32 bao la KHONG co mat (present === false: thao ra / khong cam) */}
+      {d.sensors?.some((sv) => sv.present !== false) ? (
         <View style={{ paddingHorizontal: 4, paddingBottom: 6, gap: 6 }}>
-          {d.sensors.map((sensor) => {
+          {d.sensors.filter((sv) => sv.present !== false).map((sensor) => {
             const pending = pendingKeys.includes(sensorKeyOf(d._id, sensor.sensorId));
             return (
               <View key={sensor.sensorId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

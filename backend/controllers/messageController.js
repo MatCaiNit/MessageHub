@@ -40,7 +40,7 @@ const guessSensorKind = (sensorId) => {
   if (id.includes('gas')) return 'gas';
   return 'other';
 };
-
+// ===================================================================
 
 // POST /api/messages/device
 export const sendDeviceMessage = async (req, res) => {
@@ -106,6 +106,11 @@ export const sendDeviceMessage = async (req, res) => {
             sensor.enabled = incoming.enabled;
             sensorsChanged = true;
           }
+          // Firmware tu bao cam bien co that su duoc cam/phat hien hay khong
+          if (typeof incoming.present === 'boolean' && sensor.present !== incoming.present) {
+            sensor.present = incoming.present;
+            sensorsChanged = true;
+          }
           // Cap nhat nhan hien thi neu firmware co gui kem (vd lan dau khai bao)
           if (typeof incoming.label === 'string' && incoming.label && sensor.label !== incoming.label) {
             sensor.label = incoming.label;
@@ -117,6 +122,7 @@ export const sendDeviceMessage = async (req, res) => {
             label: incoming.label || incoming.sensorId,
             kind: guessSensorKind(incoming.sensorId),
             enabled: incoming.enabled,
+            present: incoming.present !== false,
           });
           knownSensors.add(incoming.sensorId);
           sensorsChanged = true;

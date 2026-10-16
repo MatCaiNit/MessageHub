@@ -18,6 +18,63 @@
                       // "Output does not name a type" nhu ban vua gap.
 #include "Sensor.h"   // MOI: struct Sensor, cung ly do nam rieng header nhu Output.h
 
+#define USE_BME280        0
+#define USE_BH1750        0
+#define USE_INA219        0
+#define USE_RAIN          0
+#define USE_SOIL          0
+#define USE_WATER_LEVEL   0
+#define USE_CO2_MHZ19     0
+#define USE_RELAY         0
+
+#if USE_BME280 || USE_BH1750 || USE_INA219
+  #define USE_I2C_BUS 1
+  #include <Wire.h>
+#else
+  #define USE_I2C_BUS 0
+#endif
+#if USE_BME280
+  #include <Adafruit_BME280.h>
+#endif
+#if USE_BH1750
+  #include <BH1750.h>
+#endif
+#if USE_INA219
+  #include <Adafruit_INA219.h>
+#endif
+
+// Chan cho cam bien mo rong (tranh cac chan da dung: 0,4,5,18,21,26,34,35).
+// GPIO21 dang dung cho PIR nen I2C dung chan khac (25/27), khong dung 21/22 mac dinh.
+#define PIN_I2C_SDA   25   // BME280 / BH1750 / INA219 - SDA
+#define PIN_I2C_SCL   27   // ... SCL
+#define PIN_RAIN      32   // cam bien mua - AO  (ADC1)
+#define PIN_SOIL      33   // do am dat dien dung - AOUT (ADC1)
+#define PIN_WATER     36   // cam bien muc nuoc - S (ADC1, chi-doc)
+#define PIN_CO2_RX    16   // ESP32 nhan <- TX cua MH-Z19B
+#define PIN_CO2_TX    17   // ESP32 gui  -> RX cua MH-Z19B
+#define PIN_RELAY     19   // module relay - IN
+
+// ---- CAT NGUON THAT CHO TUNG CAM BIEN (bat/tat tu app) ----
+// Dat so GPIO cua chan dieu khien nguon cam bien; -1 = khong noi (chi tam ngung doc).
+//  * PIR / HC-SR04 / MQ-2 / MH-Z19B: noi qua 1 module RELAY 4 KENH 5V
+//    (IN1..IN4 -> cac chan duoi day; VCC cam bien di qua tiep diem COM-NO cua relay).
+//    Module relay thuong kich muc THAP nen code dat activeLow = true.
+//  * DHT22: cap nguon thang tu GPIO (dong < 2,5 mA), HIGH = co dien.
+#define PWR_PIR    -1   // vd 13
+#define PWR_DIST   -1   // vd 14
+#define PWR_GAS    -1   // vd 22
+#define PWR_CO2    -1   // vd 23
+#define PWR_DHT    -1   // vd 2
+
+// Hieu chuan (do bang Serial roi sua cho dung voi cam bien cua ban):
+#define RAIN_RAW_DRY    4095   // kho  -> 0 %
+#define RAIN_RAW_WET    1000   // uot  -> 100 %
+#define SOIL_RAW_DRY    2800   // de ngoai khong khi -> 0 %
+#define SOIL_RAW_WET    1200   // nhung nuoc         -> 100 %
+#define WATER_RAW_EMPTY    0   // khong co nuoc -> 0 %
+#define WATER_RAW_FULL  2200   // ngap toi vach tren -> 100 %
+// ==========================================================================
+
 //  CHÂN GPIO
 #define PIN_PIR      21   // PIR thực tế đang cắm ở D21
 #define PIN_BOOT_BTN 0
@@ -44,6 +101,10 @@ unsigned long lastTelemetryAt = 0;
 // ====================== DAU RA DIEU KHIEN ON/OFF =============
 Output outputs[] = {
   { "led", 26, false, false },   // LED qua tro 220 ohm, da noi tren D26
+#if USE_RELAY
+  // Module relay thuong kich muc THAP (activeLow = true): IN = LOW thi relay dong.
+  { "relay1", PIN_RELAY, true, false },
+#endif
 };
 const int OUTPUT_COUNT = sizeof(outputs) / sizeof(outputs[0]);
 
@@ -81,8 +142,54 @@ Sensor sensors[] = {
   { "sound",    "Âm thanh (KY-037/038)",             true },
   { "distance", "Khoảng cách - vật thể (HC-SR04)",   true },
   { "gas",      "Khí gas / khói (MQ-2)",              true },
+#if USE_BME280
+  { "bme",      "Áp suất, nhiệt độ, độ ẩm (BME280)",  true },
+#endif
+#if USE_BH1750
+  { "light",    "Ánh sáng (BH1750)",                  true },
+#endif
+#if USE_INA219
+  { "power",    "Điện áp & dòng điện (INA219)",       true },
+#endif
+#if USE_RAIN
+  { "rain",     "Mưa (cảm biến mưa)",                 true },
+#endif
+#if USE_SOIL
+  { "soil",     "Độ ẩm đất",                          true },
+#endif
+#if USE_WATER_LEVEL
+  { "water",    "Mực nước",                           true },
+#endif
+#if USE_CO2_MHZ19
+  { "co2",      "CO₂ (MH-Z19B)",                      true },
+#endif
 };
 const int SENSOR_COUNT = sizeof(sensors) / sizeof(sensors[0]);
+
+// "present" = cam bien co THAT SU duoc cam/phat hien (khac "enabled" = nguoi dung
+// bat/tat). App an hang bat/tat va the Dashboard cua cam bien present == false.
+// Chi DHT22 va MQ-2 co the tu nhan biet vang mat (doc loi / gia tri ~0); PIR,
+// am thanh, sieu am coi nhu luon co. Can 2 lan do lien tiep that bai moi coi la
+// vang mat (tranh nhap nhay do 1 lan doc loi).
+bool sensorPresent[SENSOR_COUNT];
+bool sensorReportedPresent[SENSOR_COUNT];
+int  sensorMiss[SENSOR_COUNT];
+
+int sensorIndexOf(const char* id) {
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (strcmp(sensors[i].id, id) == 0) return i;
+  }
+  return -1;
+}
+
+// Cap nhat trang thai "co mat" cua 1 cam bien sau moi lan doc. Cam bien dang bi
+// nguoi dung tat thi khong doc nen giu nguyen trang thai cu.
+void updatePresence(const char* id, bool detected) {
+  int i = sensorIndexOf(id);
+  if (i < 0 || !sensors[i].enabled) return;
+  if (detected) { sensorMiss[i] = 0; sensorPresent[i] = true; }
+  else if (++sensorMiss[i] >= 2) { sensorPresent[i] = false; }
+}
 
 Sensor* findSensor(const char* id) {
   if (!id) return nullptr;
@@ -99,6 +206,69 @@ bool sensorEnabled(const char* id) {
   Sensor* sv = findSensor(id);
   return sv ? sv->enabled : true;
 }
+
+// ================== CAT NGUON THAT TUNG CAM BIEN ==================
+struct SensorPower {
+  const char*   id;
+  int           pin;         // -1 = khong co chan dieu khien nguon
+  bool          activeLow;   // true: LOW = co dien (module relay)
+  unsigned long warmMs;      // thoi gian lam nong sau khi cap dien lai
+  unsigned long onAt;        // 0 = chua tung bi cat nguon
+};
+SensorPower sensorPower[] = {
+  { "pir",      PWR_PIR,  true,  60000,  0 },
+  { "distance", PWR_DIST, true,  1500,   0 },
+  { "gas",      PWR_GAS,  true,  30000,  0 },
+  { "dht",      PWR_DHT,  false, 2500,   0 },
+#if USE_CO2_MHZ19
+  { "co2",      PWR_CO2,  true,  180000, 0 },
+#endif
+};
+const int SENSOR_POWER_COUNT = sizeof(sensorPower) / sizeof(sensorPower[0]);
+
+SensorPower* findSensorPower(const char* id) {
+  for (int i = 0; i < SENSOR_POWER_COUNT; i++) {
+    if (strcmp(sensorPower[i].id, id) == 0) return &sensorPower[i];
+  }
+  return nullptr;
+}
+
+void driveSensorPower(SensorPower* sp, bool on) {
+  if (!sp || sp->pin < 0) return;
+  digitalWrite(sp->pin, (on != sp->activeLow) ? HIGH : LOW);
+  if (on) sp->onAt = millis();
+}
+
+// Goi 1 lan o setup(): dat chan nguon theo trang thai bat/tat hien tai.
+void initSensorPower() {
+  for (int i = 0; i < SENSOR_POWER_COUNT; i++) {
+    if (sensorPower[i].pin < 0) continue;
+    // Ghi muc "tat" truoc khi thanh OUTPUT de relay khong giat luc khoi dong
+    digitalWrite(sensorPower[i].pin, sensorPower[i].activeLow ? HIGH : LOW);
+    pinMode(sensorPower[i].pin, OUTPUT);
+    Sensor* sv = findSensor(sensorPower[i].id);
+    driveSensorPower(&sensorPower[i], sv ? sv->enabled : true);
+    sensorPower[i].onAt = 0;   // luc boot coi nhu da san sang (setup co warm-up rieng)
+  }
+}
+
+// Goi khi app bat/tat 1 cam bien: dong/ngat nguon + reset trang thai "co mat".
+void applySensorPower(const char* id, bool on) {
+  driveSensorPower(findSensorPower(id), on);
+  int i = sensorIndexOf(id);
+  if (i >= 0 && on) { sensorMiss[i] = 0; sensorPresent[i] = true; }
+}
+
+// Cam bien da het thoi gian lam nong (hoac khong co chan nguon) chua.
+bool sensorReady(const char* id) {
+  SensorPower* sp = findSensorPower(id);
+  if (!sp || sp->pin < 0 || sp->onAt == 0) return true;
+  return millis() - sp->onAt >= sp->warmMs;
+}
+
+// Dang bat VA da san sang de doc.
+bool sensorOn(const char* id) { return sensorEnabled(id) && sensorReady(id); }
+// ====================================================================
 
 // Gan mang outputs[] hien tai vao 1 JsonDocument (dung chung cho ca su kien
 // "boot" va "command_applied" - tranh lap code).
@@ -120,6 +290,7 @@ void appendSensorsJson(JsonDocument &doc) {
     o["sensorId"] = sensors[i].id;
     o["label"]    = sensors[i].label;
     o["enabled"]  = sensors[i].enabled;
+    o["present"]  = sensorPresent[i];
   }
 }
 // ===================================================================
@@ -160,6 +331,12 @@ unsigned long lastPirLowTime  = 0;
 unsigned long lastTriggerTime = 0;
 unsigned long lastDebugTime   = 0;
 bool armed = false;
+
+// Ngat bat canh LEN cua PIR: loop() co the bi chan vai giay boi HTTP/TLS (nhat la
+// khi server nam tren Render qua https), xung HIGH ngan se bi bo lo neu chi doc
+// digitalRead() trong loop. ISR chi dat co, viec con lai lam trong loop().
+volatile bool pirEdgeFlag = false;
+void IRAM_ATTR pirIsr() { pirEdgeFlag = true; }
 
 WiFiManager wm;
 
@@ -305,7 +482,7 @@ bool beginHttp(HTTPClient &http, WiFiClient &plain, WiFiClientSecure &secure, co
 // ===================================================================
 
 String messageUrl() { return resolveServerBase() + "/api/messages/device"; }
-String commandUrl() { return resolveServerBase() + "/api/devices/" + deviceId + "/command"; }
+String commandUrl() { return resolveServerBase() + "/api/devices/command"; }
 
 bool sendMessage(const char* content, const char* type, JsonDocument* deviceDataDoc = nullptr);
 void pollCommand();
@@ -350,11 +527,8 @@ void setupWiFiAndApiKey() {
       apiKey.c_str(), 100);
   wm.addParameter(&customApiKey);
 
-  // Device ID la ObjectId cua MongoDB (24 ky tu hex), tang len 40 cho du phong
-  WiFiManagerParameter customDeviceId(
-      "deviceid", "Device ID (cung xem o tab Thiet bi tren web MessageHub)",
-      deviceId.c_str(), 40);
-  wm.addParameter(&customDeviceId);
+  // BO Device ID: server tu nhan ra thiet bi tu API key (X-Device-Key), ESP32
+  // poll lenh qua GET /api/devices/command - chi can 1 key duy nhat.
 
   // MOI: dia chi server - nhap 1 lan, dung duoc o moi mang WiFi (xem giai thich
   // o khoi "DIA CHI SERVER KHONG PHU THUOC IP" phia tren).
@@ -438,23 +612,74 @@ void setupWiFiAndApiKey() {
     Serial.println("[SETUP] Da luu API key vao flash");
   }
 
-  String enteredDeviceId = String(customDeviceId.getValue());
-  enteredDeviceId.trim();
-  if (enteredDeviceId.length() > 0) {
-    deviceId = enteredDeviceId;
-    prefs.putString("deviceid", deviceId);
-    Serial.println("[SETUP] Da luu Device ID vao flash");
-  }
-
   if (apiKey.length() == 0) {
     Serial.println("[SETUP] ⚠ CHUA CO API KEY! Giu nut BOOT 3s de vao lai config.");
-  }
-  if (deviceId.length() == 0) {
-    Serial.println("[SETUP] ⚠ CHUA CO DEVICE ID! Se khong bat/tat duoc tu app cho toi khi nhap.");
   }
 }
 
 
+
+// ---------------- Doi tuong cam bien mo rong ----------------
+#if USE_BME280
+Adafruit_BME280 bme;
+#endif
+#if USE_BH1750
+BH1750 lightMeter;
+#endif
+#if USE_INA219
+Adafruit_INA219 ina;
+#endif
+#if USE_CO2_MHZ19
+HardwareSerial co2Serial(2);   // UART2
+#endif
+
+// Khoi tao cam bien I2C (goi o setup va thu lai neu truoc do khong thay).
+// Tra ve true neu cam bien tra loi.
+#if USE_BME280
+bool beginBme()   { return bme.begin(0x76) || bme.begin(0x77); }
+#endif
+#if USE_BH1750
+bool beginLight() { return lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE); }
+#endif
+#if USE_INA219
+bool beginIna()   { return ina.begin(); }
+#endif
+
+// Doi gia tri tho ADC sang phan tram theo 2 moc hieu chuan (kep 0-100).
+int rawToPercent(int raw, int rawLow, int rawHigh) {
+  long p = (long)(raw - rawLow) * 100L / (rawHigh - rawLow);
+  if (p < 0) p = 0;
+  if (p > 100) p = 100;
+  return (int)p;
+}
+
+int readAnalogAvg(int pin) {
+  long sum = 0;
+  for (int i = 0; i < 8; i++) { sum += analogRead(pin); delay(2); }
+  return (int)(sum / 8);
+}
+
+#if USE_CO2_MHZ19
+// MH-Z19B: gui lenh 0x86 (doc CO2), nhan 9 byte. Tra ve ppm hoac -1 neu loi.
+int readCo2Ppm() {
+  static const uint8_t cmd[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+  while (co2Serial.available()) co2Serial.read();   // xoa du lieu cu
+  co2Serial.write(cmd, 9);
+  uint8_t buf[9];
+  unsigned long t0 = millis();
+  int n = 0;
+  while (n < 9 && millis() - t0 < 600) {
+    if (co2Serial.available()) buf[n++] = co2Serial.read();
+    else delay(2);
+  }
+  if (n < 9 || buf[0] != 0xFF || buf[1] != 0x86) return -1;
+  uint8_t sum = 0;
+  for (int i = 1; i < 8; i++) sum += buf[i];
+  sum = 0xFF - sum + 1;
+  if (sum != buf[8]) return -1;
+  return buf[2] * 256 + buf[3];
+}
+#endif
 
 void setup() {
   Serial.begin(115200);
@@ -465,6 +690,12 @@ void setup() {
   Serial.println("╚═════════════════════════════════════════════════╝");
 
   pinMode(PIN_PIR, INPUT);
+
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    sensorPresent[i] = true;           // mac dinh coi la co; telemetry se cap nhat
+    sensorReportedPresent[i] = true;   // khop voi tin "boot" gui len ben duoi
+    sensorMiss[i] = 0;
+  }
 
   for (int i = 0; i < OUTPUT_COUNT; i++) {
     pinMode(outputs[i].pin, OUTPUT);
@@ -477,6 +708,36 @@ void setup() {
   pinMode(PIN_TRIG, OUTPUT);
   pinMode(PIN_ECHO, INPUT);
   digitalWrite(PIN_TRIG, LOW);
+
+  initSensorPower();   // dat chan nguon cam bien (neu co noi) truoc khi doc
+
+  // ---- Cam bien mo rong ----
+#if USE_I2C_BUS
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+#endif
+#if USE_BME280
+  { int i = sensorIndexOf("bme");   if (i >= 0) sensorPresent[i] = beginBme(); }
+#endif
+#if USE_BH1750
+  { int i = sensorIndexOf("light"); if (i >= 0) sensorPresent[i] = beginLight(); }
+#endif
+#if USE_INA219
+  { int i = sensorIndexOf("power");  if (i >= 0) sensorPresent[i] = beginIna(); }
+#endif
+#if USE_RAIN
+  pinMode(PIN_RAIN, INPUT);
+#endif
+#if USE_SOIL
+  pinMode(PIN_SOIL, INPUT);
+#endif
+#if USE_WATER_LEVEL
+  pinMode(PIN_WATER, INPUT);
+#endif
+#if USE_CO2_MHZ19
+  co2Serial.begin(9600, SERIAL_8N1, PIN_CO2_RX, PIN_CO2_TX);
+#endif
+  // Cac sensorReportedPresent khop voi trang thai vua do de khong gui "sensors_changed" thua
+  for (int i = 0; i < SENSOR_COUNT; i++) sensorReportedPresent[i] = sensorPresent[i];
 
   setupWiFiAndApiKey();
 
@@ -494,6 +755,8 @@ void setup() {
   }
   Serial.println("[BOOT] Warm-up xong");
   lastServerOk = millis();   // moc cho watchdog server
+  pirEdgeFlag = false;
+  attachInterrupt(digitalPinToInterrupt(PIN_PIR), pirIsr, RISING);
   lastPirState = digitalRead(PIN_PIR);
   lastPirLowTime = millis();
 
@@ -506,7 +769,7 @@ void setup() {
 
     // MOI: tang kich thuoc buffer vi bootData gio co THEM mang sensors[]
     // (ngoai outputs[] cu) - 128 byte la khong du, se bi cat du lieu lang le.
-    StaticJsonDocument<512> bootData;
+    DynamicJsonDocument bootData(3072);
     bootData["event"] = "boot";
     appendOutputsJson(bootData);
     appendSensorsJson(bootData);
@@ -583,15 +846,50 @@ float readDistanceCm() {
   return duration * 0.0343f / 2.0f;   // van toc am thanh ~343 m/s
 }
 
+#define GAS_MIN_VALID 30   // duoi muc nay coi nhu MQ-2 khong duoc cam (can dien tro keo xuong)
+#define SOUND_MIN_VALID 30 // nhu tren cho KY-037/038 (muc nen luc cam thuong >> 30; can dien tro keo xuong)
+
+// Kiem tra mot chan SO co dang duoc cam bien DIEU KHIEN hay dang HO (khong cam):
+// doc chan khi bat dien tro keo LEN roi keo XUONG. Neu cam bien dang day chan
+// (HIGH hoac LOW) thi 2 lan doc GIONG nhau; neu chan ho thi doc theo dien tro
+// (HIGH roi LOW) nen KHAC nhau. Dung cho HC-SR04 (Echo) va PIR (OUT).
+// KHONG dung duoc cho GPIO34-39 (khong co dien tro keo ben trong).
+bool pinDriven(int pin) {
+  pinMode(pin, INPUT_PULLUP);
+  delayMicroseconds(200);
+  int a = digitalRead(pin);
+  pinMode(pin, INPUT_PULLDOWN);
+  delayMicroseconds(200);
+  int b = digitalRead(pin);
+  pinMode(pin, INPUT);
+  return a == b;
+}
+
+// Gia tri tuong tu cho PIR nhung phai tam ngat ngat phan cung de viec doi che do
+// chan khong tao ra canh gia.
+bool pirLineDriven() {
+  detachInterrupt(digitalPinToInterrupt(PIN_PIR));
+  bool driven = pinDriven(PIN_PIR);
+  attachInterrupt(digitalPinToInterrupt(PIN_PIR), pirIsr, RISING);
+  pirEdgeFlag = false;
+  return driven;
+}
+
+// Cam bien dang duoc bat VA co mat -> dung duoc.
+bool sensorUsable(const char* id) {
+  int i = sensorIndexOf(id);
+  return i < 0 || (sensors[i].enabled && sensorPresent[i] && sensorReady(id));
+}
+
 // Doc cac cam bien (DHT22/am thanh/sieu am/gas) roi gui 1 goi telemetry duy
 // nhat len server. CHI doc + gui cam bien nao dang sensors[].enabled == true -
 // cam bien da bi "tam tat" tu app se KHONG xuat hien trong readings nua, va
 // Dashboard tren app se tu an the/chi so tuong ung (xem DashboardScreen.js).
 void sendTelemetry() {
-  bool dhtOn  = sensorEnabled("dht");
+  bool dhtOn  = sensorOn("dht");
   bool soundOn = sensorEnabled("sound");
-  bool distOn  = sensorEnabled("distance");
-  bool gasOn   = sensorEnabled("gas");
+  bool distOn  = sensorOn("distance");
+  bool gasOn   = sensorOn("gas");
 
   float temperature = NAN;
   float humidity     = NAN;
@@ -603,18 +901,127 @@ void sendTelemetry() {
     temperature = dht.readTemperature();   // NaN neu doc loi
     humidity     = dht.readHumidity();     // NaN neu doc loi
   }
-  if (soundOn) soundRaw   = analogRead(PIN_SOUND);   // 0-4095
+  if (soundOn) {
+    long ssum = 0;
+    for (int i = 0; i < 8; i++) { ssum += analogRead(PIN_SOUND); delay(2); }
+    soundRaw = (int)(ssum / 8);                        // 0-4095
+  }
   if (distOn)  distanceCm = readDistanceCm();        // -1 neu khong do duoc
-  if (gasOn)   gasRaw     = analogRead(PIN_GAS);      // 0-4095, MQ-2 (khi gas/khoi)
+  if (gasOn) {
+    // Lay trung binh 8 mau cho do nhieu. MQ-2 dang cam: AO luon > GAS_MIN_VALID
+    // (khong khi sach van ~vai tram). Thao MQ-2 ra + dien tro keo xuong 100k
+    // GPIO35->GND: chan doc ~0 -> coi la "khong co cam bien", khong gui so rac.
+    long sum = 0;
+    for (int i = 0; i < 8; i++) { sum += analogRead(PIN_GAS); delay(2); }
+    gasRaw = (int)(sum / 8);   // 0-4095
+    Serial.printf("[GAS] gia tri doc duoc = %d (nguong coi la co MQ-2: >= %d)\n", gasRaw, GAS_MIN_VALID);
+  }
 
-  StaticJsonDocument<256> data;
+  DynamicJsonDocument data(1024);
   data["event"] = "telemetry";
   JsonObject readings = data.createNestedObject("readings");
   if (dhtOn && !isnan(temperature)) readings["temperature"] = temperature;
   if (dhtOn && !isnan(humidity))    readings["humidity"]    = humidity;
-  if (soundOn)                      readings["soundLevel"]  = soundRaw;
+  if (soundOn && soundRaw >= SOUND_MIN_VALID) readings["soundLevel"] = soundRaw;
   if (distOn && distanceCm >= 0)    readings["distanceCm"]  = distanceCm;
-  if (gasOn)                        readings["gasLevel"]    = gasRaw;
+  if (gasOn && gasRaw >= GAS_MIN_VALID) readings["gasLevel"] = gasRaw;
+  else if (gasOn) Serial.println("[GAS] Khong thay MQ-2 (gia tri ~0) - bo qua lan gui nay");
+
+  // ---------------- CAM BIEN MO RONG ----------------
+#if USE_BME280
+  if (sensorEnabled("bme")) {
+    int bi = sensorIndexOf("bme");
+    if (!sensorPresent[bi]) beginBme();               // thu khoi tao lai neu moi cam vao
+    float t = bme.readTemperature();
+    float h = bme.readHumidity();
+    float p = bme.readPressure() / 100.0F;            // Pa -> hPa
+    bool ok = !isnan(p) && p > 300 && p < 1200;
+    if (ok) {
+      readings["pressureHpa"]   = p;
+      if (!isnan(t)) readings["bmeTemperature"] = t;
+      if (!isnan(h)) readings["bmeHumidity"]    = h;
+    }
+    updatePresence("bme", ok);
+  }
+#endif
+#if USE_BH1750
+  if (sensorEnabled("light")) {
+    int li = sensorIndexOf("light");
+    if (!sensorPresent[li]) beginLight();
+    float lux = lightMeter.readLightLevel();          // < 0 neu loi
+    bool ok = lux >= 0;
+    if (ok) readings["lightLux"] = lux;
+    updatePresence("light", ok);
+  }
+#endif
+#if USE_INA219
+  if (sensorEnabled("power")) {
+    int pi2 = sensorIndexOf("power");
+    if (!sensorPresent[pi2]) beginIna();
+    float busV = ina.getBusVoltage_V();
+    float mA   = ina.getCurrent_mA();
+    // INA219 mat ket noi I2C thi cac ham tra ve 0 ca hai -> tinh la khong co
+    bool ok = !(busV == 0 && mA == 0) && !isnan(busV);
+    if (ok) {
+      readings["busVoltage"] = busV;
+      readings["currentMa"]  = mA;
+      readings["powerMw"]    = busV * mA;
+    }
+    updatePresence("power", ok);
+  }
+#endif
+#if USE_RAIN
+  if (sensorEnabled("rain")) {
+    int raw = readAnalogAvg(PIN_RAIN);
+    readings["rainPercent"] = rawToPercent(raw, RAIN_RAW_DRY, RAIN_RAW_WET);
+    Serial.printf("[RAIN] raw=%d\n", raw);
+  }
+#endif
+#if USE_SOIL
+  if (sensorEnabled("soil")) {
+    int raw = readAnalogAvg(PIN_SOIL);
+    readings["soilPercent"] = rawToPercent(raw, SOIL_RAW_DRY, SOIL_RAW_WET);
+    Serial.printf("[SOIL] raw=%d\n", raw);
+  }
+#endif
+#if USE_WATER_LEVEL
+  if (sensorEnabled("water")) {
+    int raw = readAnalogAvg(PIN_WATER);
+    readings["waterPercent"] = rawToPercent(raw, WATER_RAW_EMPTY, WATER_RAW_FULL);
+    Serial.printf("[WATER] raw=%d\n", raw);
+  }
+#endif
+#if USE_CO2_MHZ19
+  if (sensorOn("co2")) {
+    int ppm = readCo2Ppm();
+    bool ok = ppm > 0;
+    if (ok) readings["co2Ppm"] = ppm;
+    updatePresence("co2", ok);
+  }
+#endif
+
+  // Cap nhat "co mat" cho cam bien tu nhan biet duoc, roi bao server neu doi
+  // (app se an/hien hang bat/tat + the Dashboard tuong ung).
+  if (dhtOn) updatePresence("dht", !isnan(temperature) || !isnan(humidity));
+  if (gasOn) updatePresence("gas", gasRaw >= GAS_MIN_VALID);
+  if (soundOn) updatePresence("sound", soundRaw >= SOUND_MIN_VALID);
+  // HC-SR04: do duoc (>=0) la co mat; khong do duoc thi xem chan Echo co duoc day khong
+  // (huong ra khoang trong van tra -1 nhung chan Echo van duoc cam bien giu o muc LOW).
+  if (distOn) updatePresence("distance", distanceCm >= 0 || pinDriven(PIN_ECHO));
+  if (sensorOn("pir")) updatePresence("pir", pirLineDriven());
+
+  bool presenceChanged = false;
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    if (sensorPresent[i] != sensorReportedPresent[i]) presenceChanged = true;
+  }
+  if (presenceChanged) {
+    DynamicJsonDocument ev(3072);
+    ev["event"] = "sensors_changed";
+    appendSensorsJson(ev);
+    if (sendMessage("Cap nhat danh sach cam bien", "device_event", &ev)) {
+      for (int i = 0; i < SENSOR_COUNT; i++) sensorReportedPresent[i] = sensorPresent[i];
+    }
+  }
 
   // Tat ca cam bien doc deu dang bi tam tat -> khong co gi de gui, bo qua
   // luon lan nay (tranh gui 1 message rong moi 30s).
@@ -710,7 +1117,7 @@ void loop() {
   // thi khong bi "nhay" theo 1 canh xung cu da bi bo lo luc dang tat).
   int currentState = digitalRead(PIN_PIR);
 
-  if (sensorEnabled("pir")) {
+  if (sensorUsable("pir")) {
     if (DEBUG_PIR_STATE && (now - lastDebugTime > 3000)) {
       lastDebugTime = now;
       Serial.printf("[DEBUG] PIR = %s | chuoi = %d/%d\n",
@@ -718,12 +1125,19 @@ void loop() {
                     motionSeqCount, MOTION_SEQ_TARGET);
     }
 
-    // Moi canh LEN (LOW -> HIGH) = 1 lan chuyen dong
-    if (currentState == HIGH && lastPirState == LOW
-        && (now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
-      lastTriggerTime = now;
-      onMotionDetected();
+    // Moi canh LEN (LOW -> HIGH) = 1 lan chuyen dong. Canh duoc bat bang NGAT
+    // (pirIsr) nen khong bi mat du loop() dang bi chan boi HTTP/TLS len server.
+    if (pirEdgeFlag) {
+      noInterrupts();
+      pirEdgeFlag = false;
+      interrupts();
+      if ((now - lastTriggerTime) >= PIR_MIN_INTERVAL) {
+        lastTriggerTime = now;
+        onMotionDetected();
+      }
     }
+  } else {
+    pirEdgeFlag = false;   // cam bien dang tat -> bo qua xung
   }
 
   lastPirState = currentState;
@@ -736,11 +1150,10 @@ void loop() {
  *  Backend tra ve trong 1 lan poll duy nhat:
  *  { "commands":       [ { "outputId": "led", "state": true }, ... ],
  *    "sensorCommands": [ { "sensorId": "dht", "enabled": false }, ... ] }
- *  Can Device ID that (khong chi API key) vi route nay la
- *  GET /api/devices/:id/command.
+ *  Chi can API key: route GET /api/devices/command nhan ra thiet bi tu X-Device-Key.
  */
 void pollCommand() {
-  if (deviceId.length() == 0) return;               // chua nhap Device ID
+  if (apiKey.length() == 0) return;                 // chua nhap API key
   if (millis() - lastCommandPoll < COMMAND_POLL_MS) return;
   lastCommandPoll = millis();
 
@@ -759,7 +1172,7 @@ void pollCommand() {
 
   if (code == 200) {
     // MOI: tang tu 512 len 768 vi response gio co them mang sensorCommands
-    StaticJsonDocument<768> doc;
+    DynamicJsonDocument doc(1024);
     if (deserializeJson(doc, http.getString()) == DeserializationError::Ok) {
       JsonArray commands = doc["commands"].as<JsonArray>();
       for (JsonObject cmd : commands) {
@@ -791,6 +1204,7 @@ void pollCommand() {
         if (sv->enabled == wanted) continue;
 
         sv->enabled = wanted;
+        applySensorPower(sv->id, wanted);   // dong/ngat nguon that neu co chan dieu khien
         Serial.printf("[SENSOR] %s -> %s\n", sv->id, wanted ? "BAT" : "TAM TAT");
         appliedSensor = true;
       }
@@ -803,7 +1217,7 @@ void pollCommand() {
   // Bao lai trang thai THUC sau khi thuc thi (ca output lan cam bien), de
   // app doc duoc ngay ma khong phai doi den lan telemetry/boot tiep theo.
   if (appliedOutput || appliedSensor) {
-    StaticJsonDocument<512> data;
+    DynamicJsonDocument data(3072);
     data["event"] = "command_applied";
     appendOutputsJson(data);
     appendSensorsJson(data);
@@ -826,7 +1240,7 @@ bool sendMessage(const char* content, const char* type, JsonDocument* deviceData
 
   // MOI: tang tu 384 len 512 - deviceData gio co the mang ca outputs[] va
   // sensors[] cung luc (boot / command_applied), can them cho.
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(6144);
   doc["content"] = content;
   doc["type"]    = type;
   if (deviceDataDoc != nullptr) {

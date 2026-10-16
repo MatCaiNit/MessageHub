@@ -33,7 +33,6 @@ const pendingCommandSchema = new mongoose.Schema(
   { _id: false }
 );
 
-
 const sensorSchema = new mongoose.Schema(
   {
     // Khop chinh xac voi truong `id` trong mang sensors[] cua firmware
@@ -51,6 +50,8 @@ const sensorSchema = new mongoose.Schema(
 
     // Trang thai THUC do ESP32 bao ve (dang doc hay dang tam ngung).
     enabled: { type: Boolean, default: true },
+
+    present: { type: Boolean, default: true },
   },
   { _id: false }
 );
