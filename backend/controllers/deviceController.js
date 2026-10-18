@@ -463,6 +463,8 @@ export const getDeviceTelemetryHistory = async (req, res) => {
 
     // Thong ke (TB / thap nhat / cao nhat) tinh tren DU LIEU GOC, khong phai
     // tren du lieu da gop xo -> so lieu chinh xac cho ca khoang thoi gian.
+    // Cac khoa "dem so lan" (moi diem = so lan trong 1 lan gui): gop xo bang TONG, khong phai TB
+    const COUNT_KEYS = new Set(['motionCount', 'vibrationCount']);
     const acc = {};
     rawPoints.forEach((p) => {
       Object.entries(p.r).forEach(([k, v]) => {
@@ -476,7 +478,7 @@ export const getDeviceTelemetryHistory = async (req, res) => {
     });
     const stats = {};
     Object.entries(acc).forEach(([k, a]) => {
-      stats[k] = { avg: a.sum / a.count, min: a.min, max: a.max, count: a.count };
+      stats[k] = { avg: a.sum / a.count, sum: a.sum, min: a.min, max: a.max, count: a.count };
     });
 
     let readings;
@@ -505,7 +507,7 @@ export const getDeviceTelemetryHistory = async (req, res) => {
         .map((idx) => {
           const b = buckets.get(idx);
           const r = {};
-          Object.entries(b.sums).forEach(([k, a]) => { r[k] = a.s / a.c; });
+          Object.entries(b.sums).forEach(([k, a]) => { r[k] = COUNT_KEYS.has(k) ? a.s : a.s / a.c; });
           return { readings: r, createdAt: new Date(b.tSum / b.n), samples: b.n };
         });
     }
