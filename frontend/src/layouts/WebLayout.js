@@ -381,6 +381,14 @@ function Sidebar({ me, activeConvId, onSelectConv, unreadMap }) {
   );
 }
 
+// ─── Icon cho dau ra / cam bien trong khung bat-tat o thanh ben ──────────────
+const OUTPUT_ICON = { led: '💡', relay: '🔌', buzzer: '🔔', other: '🎛️' };
+const SENSOR_ICON = {
+  pir: '🚶', dht: '🌡️', sound: '🔊', distance: '📏', gas: '🧯',
+  light: '☀️', rain: '🌧️', mq4: '🔥', flame: '🚨', vibration: '📳',
+};
+const sensorIcon = (id) => SENSOR_ICON[id] || '📡';
+
 // ─── Sidebar Devices ─────────────────────────────────────────────────────────
 function DevicesSidebar({ activeConvId, onSelectDevice }) {
   const [devices, setDevices] = useState([]);
@@ -585,15 +593,21 @@ const handleToggleSensor = async (device, sensor) => {
         </View>
       </TouchableOpacity>
 
-      {/* MOI: 1 nut bat/tat cho tung output cua thiet bi */}
+      {/* Dieu khien thiet bi (den / relay / coi) */}
       {d.outputs?.length ? (
         <View style={{ paddingHorizontal: 4, paddingBottom: 6, gap: 6 }}>
+          <Text style={{ fontSize: FONT.xs, fontWeight: '700', color: C.textMuted || C.text, opacity: 0.7, marginTop: 2 }}>
+            ĐIỀU KHIỂN
+          </Text>
           {d.outputs.map((output) => {
             const pending = pendingKeys.includes(keyOf(d._id, output.outputId));
             return (
               <View key={output.outputId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Text style={{ flex: 1, fontSize: FONT.sm, color: C.text }} numberOfLines={1}>
-                  {output.label || output.outputId}
+                  {OUTPUT_ICON[output.kind] || OUTPUT_ICON.other} {output.label || output.outputId}
+                  <Text style={{ fontSize: FONT.xs, color: output.state ? '#15803D' : C.text, opacity: 0.7 }}>
+                    {output.state ? '  · đang bật' : '  · đang tắt'}
+                  </Text>
                 </Text>
                 <TouchableOpacity
                   style={{
@@ -621,12 +635,15 @@ const handleToggleSensor = async (device, sensor) => {
       {/* An cam bien ESP32 bao la KHONG co mat (present === false: thao ra / khong cam) */}
       {d.sensors?.some((sv) => sv.present !== false) ? (
         <View style={{ paddingHorizontal: 4, paddingBottom: 6, gap: 6 }}>
+          <Text style={{ fontSize: FONT.xs, fontWeight: '700', color: C.textMuted || C.text, opacity: 0.7, marginTop: 2 }}>
+            CẢM BIẾN ({d.sensors.filter((sv) => sv.present !== false && sv.enabled).length}/{d.sensors.filter((sv) => sv.present !== false).length} đang đo)
+          </Text>
           {d.sensors.filter((sv) => sv.present !== false).map((sensor) => {
             const pending = pendingKeys.includes(sensorKeyOf(d._id, sensor.sensorId));
             return (
               <View key={sensor.sensorId} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Text style={{ flex: 1, fontSize: FONT.sm, color: C.text }} numberOfLines={1}>
-                  📡 {sensor.label || sensor.sensorId}
+                  {sensorIcon(sensor.sensorId)} {sensor.label || sensor.sensorId}
                 </Text>
                 <TouchableOpacity
                   style={{

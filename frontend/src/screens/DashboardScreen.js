@@ -17,18 +17,13 @@ const SENSOR_META = {
   soundLevel:  { label: 'Âm thanh', icon: '🔊', unit: '',   color: '#A855F7', decimals: 0 },
   distanceCm:  { label: 'Khoảng cách (vật thể)', icon: '📏', unit: 'cm', color: '#22C55E', decimals: 0 },
   gasLevel:    { label: 'Khí gas / khói', icon: '🧯', unit: '', color: '#EF4444', decimals: 0 },
-  // ---- Cảm biến mở rộng ----
-  pressureHpa:    { label: 'Áp suất khí quyển', icon: '🌀', unit: 'hPa', color: '#0EA5E9', decimals: 1 },
-  bmeTemperature: { label: 'Nhiệt độ (BME280)', icon: '🌡️', unit: '°C',  color: '#FB923C', decimals: 1 },
-  bmeHumidity:    { label: 'Độ ẩm KK (BME280)', icon: '💧', unit: '%',   color: '#60A5FA', decimals: 0 },
+  // ---- Cảm biến bổ sung ----
   lightLux:       { label: 'Ánh sáng',          icon: '☀️', unit: 'lux', color: '#EAB308', decimals: 0 },
-  busVoltage:     { label: 'Điện áp',           icon: '🔌', unit: 'V',   color: '#14B8A6', decimals: 2 },
-  currentMa:      { label: 'Dòng điện',         icon: '⚡', unit: 'mA',  color: '#F43F5E', decimals: 0 },
-  powerMw:        { label: 'Công suất',         icon: '🔋', unit: 'mW',  color: '#8B5CF6', decimals: 0 },
   rainPercent:    { label: 'Mưa',               icon: '🌧️', unit: '%',   color: '#38BDF8', decimals: 0 },
-  soilPercent:    { label: 'Độ ẩm đất',         icon: '🌱', unit: '%',   color: '#16A34A', decimals: 0 },
-  waterPercent:   { label: 'Mực nước',          icon: '🚰', unit: '%',   color: '#2563EB', decimals: 0 },
-  co2Ppm:         { label: 'CO₂',               icon: '🫧', unit: 'ppm', color: '#64748B', decimals: 0 },
+  motionCount:    { label: 'Chuyển động (số lần)', icon: '🚶', unit: 'lần', color: '#0EA5E9', decimals: 0, isCount: true },
+  methaneLevel:   { label: 'Khí metan (MQ-4)',  icon: '🔥', unit: '',    color: '#F59E0B', decimals: 0 },
+  flameLevel:     { label: 'Lửa',               icon: '🚨', unit: '%',   color: '#DC2626', decimals: 0 },
+  vibrationCount: { label: 'Rung động (số lần)', icon: '📳', unit: 'lần', color: '#9333EA', decimals: 0, isCount: true },
 };
 
 // Cac khoang thoi gian. poll = chu ky tu lam moi (ms).
@@ -285,7 +280,14 @@ function SensorCard({ sensorKey, latestValue, history, stat, rangeLabel, range, 
         <Text style={s.cardUnit}> {meta.unit}</Text>
       </Text>
 
-      {avg !== null ? (
+      {avg !== null && meta.isCount ? (
+        <View style={s.statsRow}>
+          <Text style={s.statText}>Tổng: {fmtValue(stat ? stat.sum : numericValues.reduce((a, b) => a + b, 0), 0)} lần</Text>
+          <Text style={s.statDot}>·</Text>
+          <Text style={s.statText}>Nhiều nhất/lần gửi: {fmtValue(max, 0)}</Text>
+          <Text style={s.statRange}>({rangeLabel})</Text>
+        </View>
+      ) : avg !== null ? (
         <View style={s.statsRow}>
           <Text style={s.statText}>TB: {fmtValue(avg, meta.decimals)}{meta.unit}</Text>
           <Text style={s.statDot}>·</Text>
@@ -413,9 +415,8 @@ export default function DashboardScreen() {
     } else {
       (telemetry?.readings || []).forEach((r) => Object.keys(r.readings || {}).forEach((k) => keys.add(k)));
     }
-    const order = ['temperature', 'humidity', 'soundLevel', 'distanceCm', 'gasLevel',
-      'pressureHpa', 'bmeTemperature', 'bmeHumidity', 'lightLux', 'busVoltage', 'currentMa',
-      'powerMw', 'rainPercent', 'soilPercent', 'waterPercent', 'co2Ppm'];
+    const order = ['temperature', 'humidity', 'soundLevel', 'distanceCm', 'gasLevel', 'motionCount',
+      'lightLux', 'rainPercent', 'methaneLevel', 'flameLevel', 'vibrationCount'];
     return [...order.filter((k) => keys.has(k)), ...[...keys].filter((k) => !order.includes(k))];
   }, [telemetry]);
 
