@@ -1,10 +1,17 @@
 import express from 'express';
 import User from '../models/User.js';
 import { protect } from '../middleware/auth.js';
+import { updateMe, changePassword } from '../controllers/profileController.js';
 
 const router = express.Router();
 
 router.use(protect);
+
+// PATCH /api/users/me - sua ten hien thi / username / email
+router.patch('/me', updateMe);
+
+// PATCH /api/users/me/password - doi mat khau
+router.patch('/me/password', changePassword);
 
 // GET /api/users/search?q=abc - tim user theo username (de bat dau conversation moi)
 router.get('/search', async (req, res) => {

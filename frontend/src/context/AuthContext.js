@@ -45,6 +45,22 @@ export const AuthProvider = ({ children }) => {
     await _clearSession();
   };
 
+  // Cap nhat thong tin user hien tai (sau khi sua profile) - luu ca vao storage
+  const updateProfile = async (user) => {
+    const merged = { ...(me || {}), ...user };
+    await storage.setItem('me', JSON.stringify(merged));
+    setMe(merged);
+  };
+
+  // Luu token moi (sau khi doi mat khau, BE huy token cu va cap token moi)
+  const applyTokens = async ({ accessToken: at, refreshToken: rt }) => {
+    if (at) {
+      await storage.setItem('accessToken', at);
+      setAccessToken(at);
+    }
+    if (rt) await storage.setItem('refreshToken', rt);
+  };
+
   const _saveSession = async (data) => {
     await storage.setItem('accessToken', data.accessToken);
     await storage.setItem('refreshToken', data.refreshToken);
@@ -60,7 +76,9 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ me, accessToken, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ me, accessToken, loading, login, register, logout, updateProfile, applyTokens }}
+    >
       {children}
     </AuthContext.Provider>
   );

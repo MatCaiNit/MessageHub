@@ -14,6 +14,7 @@ export const registerRules = [
         .isLength({ min: 6 })
         .withMessage('Mật khẩu phải có ít nhất 6 ký tự')
         .matches(/[A-Z]/)
+        .withMessage('Mật khẩu phải có ít nhất 1 chữ in hoa')
 ];
 
 export const loginRules = [
