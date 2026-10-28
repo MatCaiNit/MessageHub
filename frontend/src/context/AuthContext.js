@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { authApi } from '../api';
 import { storage } from '../utils/storage';
+import { authEvents, refreshAccessToken } from '../api/client';
 
 const AuthContext = createContext(null);
 
@@ -9,15 +10,25 @@ export const AuthProvider = ({ children }) => {
   const [accessToken, setAccessToken] = useState(null);
   const [loading, setLoading] = useState(true); // dang kiem tra session cu
 
-  // Khi mo app: kiem tra xem da co token luu san chua, neu co thi tu dong restore session
+  // Khi mo app: neu co phien luu san thi khoi phuc, roi LAM MOI accessToken ngay
+  // (token luu tu lan truoc thuong da het han sau 15 phut -> socket/API se loi neu khong lam moi).
   useEffect(() => {
     const restoreSession = async () => {
       try {
         const token = await storage.getItem('accessToken');
+        const refreshToken = await storage.getItem('refreshToken');
         const userStr = await storage.getItem('me');
-        if (token && userStr) {
-          setAccessToken(token);
+        if (userStr && (token || refreshToken)) {
           setMe(JSON.parse(userStr));
+          let at = token;
+          if (refreshToken) {
+            try {
+              at = await refreshAccessToken();   // null -> refreshToken het han (authLost da xoa phien)
+            } catch (_) {
+              at = token;                         // mat mang: dung tam token cu, thu lai sau
+            }
+          }
+          if (at) setAccessToken(at);
         }
       } catch (_) {
       } finally {
@@ -25,6 +36,17 @@ export const AuthProvider = ({ children }) => {
       }
     };
     restoreSession();
+  }, []);
+
+  // Token duoc lam moi o noi khac (interceptor / socket) -> cap nhat state;
+  // phien het han han (refreshToken khong con hop le) -> ve man hinh dang nhap.
+  useEffect(() => {
+    const offRefreshed = authEvents.on('tokenRefreshed', (at) => setAccessToken(at));
+    const offLost = authEvents.on('authLost', () => {
+      setAccessToken(null);
+      setMe(null);
+    });
+    return () => { offRefreshed(); offLost(); };
   }, []);
 
   const login = async ({ email, password }) => {

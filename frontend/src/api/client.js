@@ -4,6 +4,51 @@ import { storage } from '../utils/storage';
 
 const client = axios.create({ baseURL: API_URL });
 
+// ─── Su kien xac thuc: de AuthContext / SocketContext biet token vua doi hoac phien da het ───
+const listeners = { tokenRefreshed: new Set(), authLost: new Set() };
+export const authEvents = {
+  on(event, fn) {
+    listeners[event].add(fn);
+    return () => listeners[event].delete(fn);
+  },
+  emit(event, payload) {
+    listeners[event].forEach((fn) => { try { fn(payload); } catch (_) {} });
+  },
+};
+
+
+let refreshPromise = null;
+export const refreshAccessToken = () => {
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    const refreshToken = await storage.getItem('refreshToken');
+    if (!refreshToken) return null;
+
+    try {
+      const { data } = await axios.post(
+        `${API_URL}/api/auth/refresh`,
+        { refreshToken },
+        { timeout: 15000 }
+      );
+      await storage.setItem('accessToken', data.accessToken);
+      authEvents.emit('tokenRefreshed', data.accessToken);
+      return data.accessToken;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 401 || status === 400) {
+        // refreshToken het han / bi huy (vd sau khi doi mat khau) -> phai dang nhap lai
+        await storage.multiRemove(['accessToken', 'refreshToken', 'me']);
+        authEvents.emit('authLost');
+        return null;
+      }
+      throw err; // loi mang: khong dang xuat
+    }
+  })().finally(() => { refreshPromise = null; });
+
+  return refreshPromise;
+};
+
 // Tu dong gan accessToken vao moi request neu co
 client.interceptors.request.use(async (config) => {
   const token = await storage.getItem('accessToken');
@@ -13,10 +58,7 @@ client.interceptors.request.use(async (config) => {
   return config;
 });
 
-// Neu accessToken het han (401, code TOKEN_EXPIRED) -> tu dong goi refresh 1 lan roi thu lai request
-let isRefreshing = false;
-let pendingQueue = [];
-
+// accessToken het han / khong hop le -> refresh 1 lan roi thu lai request
 client.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -24,37 +66,17 @@ client.interceptors.response.use(
     const status = error.response?.status;
     const code = error.response?.data?.code;
 
-    if (status === 401 && code === 'TOKEN_EXPIRED' && !originalRequest._retry) {
+    const tokenProblem = status === 401 && (code === 'TOKEN_EXPIRED' || code === 'INVALID_TOKEN');
+    if (tokenProblem && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
-
-      if (isRefreshing) {
-        // Neu dang co 1 request refresh chay roi, xep hang doi ket qua thay vi goi refresh nhieu lan
-        return new Promise((resolve, reject) => {
-          pendingQueue.push({ resolve, reject, originalRequest });
-        });
-      }
-
-      isRefreshing = true;
       try {
-        const refreshToken = await storage.getItem('refreshToken');
-        const { data } = await axios.post(`${API_URL}/api/auth/refresh`, { refreshToken });
-        await storage.setItem('accessToken', data.accessToken);
-
-        pendingQueue.forEach(({ resolve, originalRequest: req }) => {
-          req.headers.Authorization = `Bearer ${data.accessToken}`;
-          resolve(client(req));
-        });
-        pendingQueue = [];
-
-        originalRequest.headers.Authorization = `Bearer ${data.accessToken}`;
-        return client(originalRequest);
-      } catch (refreshErr) {
-        // refreshToken cung het han/khong hop le -> buoc dang xuat
-        await storage.multiRemove(['accessToken', 'refreshToken', 'me']);
-        pendingQueue = [];
-        return Promise.reject(refreshErr);
-      } finally {
-        isRefreshing = false;
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          originalRequest.headers.Authorization = `Bearer ${newToken}`;
+          return client(originalRequest);
+        }
+      } catch (_) {
+        // mat mang khi refresh -> tra ve loi goc
       }
     }
 
