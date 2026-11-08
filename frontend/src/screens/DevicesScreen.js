@@ -7,17 +7,22 @@ import { deviceApi } from '../api';
 import { Icon } from '../utils/icons';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
 
-// Man hinh quan ly thiet bi ESP32:
-// - List thiet bi cua user
-// - Them thiet bi moi -> nhan API key (chi hien 1 lan)
-// - Thu hoi thiet bi
-// - Tao lai API key
-// - Mo chat cua thiet bi
-// - MOI: bat/tat tung dau ra (output) cua thiet bi ngay tren card
 
 // Nhan icon dang text cho tung loai output, giu dong bo voi kieu emoji da
 // dung san trong man hinh nay (⚡ 💬 🔄 🚫), khong them thu vien icon moi.
 const OUTPUT_ICON = { led: '💡', relay: '🔌', buzzer: '🔔', other: '⚙️' };
+
+// Icon cho tung cam bien (theo kind do backend luu; neu thieu thi doan theo sensorId)
+const SENSOR_ICON = {
+  pir: '🚶', dht: '🌡️', sound: '🔊', distance: '📏', gas: '💨', other: '📟',
+};
+const SENSOR_ID_ICON = {
+  dht: '🌡️', sound: '🔊', distance: '📏', gas: '💨', light: '☀️', lux: '☀️',
+  rain: '🌧️', mq4: '🔥', methane: '🔥', flame: '🔥', fire: '🔥',
+  vibration: '📳', pir: '🚶', motion: '🚶',
+};
+const sensorIcon = (sv) =>
+  SENSOR_ID_ICON[String(sv.sensorId || '').toLowerCase()] || SENSOR_ICON[sv.kind] || SENSOR_ICON.other;
 
 export default function DevicesScreen({ navigation }) {
   const [devices, setDevices] = useState([]);
@@ -117,7 +122,7 @@ export default function DevicesScreen({ navigation }) {
     });
   };
 
-  // ─── MOI: bat/tat 1 output cu the cua 1 thiet bi ───────────────────────────
+  // bat/tat 1 output cu the cua 1 thiet bi
   const keyOf = (deviceId, outputId) => `${deviceId}:${outputId}`;
 
   const patchOutput = (deviceId, outputId, state) => {
@@ -171,6 +176,57 @@ export default function DevicesScreen({ navigation }) {
     }, 8000);
   };
 
+  // bat/tat 1 CAM BIEN (ngung/nhan lai du lieu cua cam bien do)
+  const sKeyOf = (deviceId, sensorId) => `${deviceId}:s:${sensorId}`;
+
+  const patchSensor = (deviceId, sensorId, enabled) => {
+    setDevices((prev) =>
+      prev.map((d) =>
+        d._id !== deviceId
+          ? d
+          : {
+              ...d,
+              sensors: (d.sensors || []).map((sv) =>
+                sv.sensorId === sensorId ? { ...sv, enabled } : sv
+              ),
+            }
+      )
+    );
+  };
+
+  const handleToggleSensor = async (device, sensor) => {
+    const key = sKeyOf(device._id, sensor.sensorId);
+    if (pendingKeys.includes(key)) return;
+
+    const next = sensor.enabled === false; // dang tat -> bat, nguoc lai
+    const previous = sensor.enabled !== false;
+
+    patchSensor(device._id, sensor.sensorId, next);
+    setPendingKeys((prev) => [...prev, key]);
+
+    try {
+      await deviceApi.sendSensorCommand(device._id, sensor.sensorId, next);
+    } catch (err) {
+      patchSensor(device._id, sensor.sensorId, previous);
+      setPendingKeys((prev) => prev.filter((k) => k !== key));
+      Alert.alert('Lỗi', err.response?.data?.message || `Không gửi được lệnh tới ${sensor.label || sensor.sensorId}`);
+      return;
+    }
+
+    // ESP32 poll lenh moi vai giay roi moi bao lai; doi chieu sau 8s
+    setTimeout(async () => {
+      try {
+        const { data } = await deviceApi.getOne(device._id);
+        const real = data.sensors?.find((sv) => sv.sensorId === sensor.sensorId);
+        if (real) patchSensor(device._id, sensor.sensorId, real.enabled !== false);
+      } catch (_) {
+        // im lang, lan refresh sau se dong bo
+      } finally {
+        setPendingKeys((prev) => prev.filter((k) => k !== key));
+      }
+    }, 8000);
+  };
+
   const renderItem = ({ item }) => (
     <DeviceCard
       device={item}
@@ -179,7 +235,9 @@ export default function DevicesScreen({ navigation }) {
       onRegenerate={() => handleRegenerate(item)}
       pendingKeys={pendingKeys}
       keyOf={keyOf}
+      sKeyOf={sKeyOf}
       onToggleOutput={(output) => handleToggle(item, output)}
+      onToggleSensor={(sensor) => handleToggleSensor(item, sensor)}
     />
   );
 
@@ -238,8 +296,8 @@ export default function DevicesScreen({ navigation }) {
   );
 }
 
-// ─── Device Card ────────────────────────────────────────────────────────────
-function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf, onToggleOutput }) {
+//  Device Card 
+function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf, sKeyOf, onToggleOutput, onToggleSensor }) {
   const lastSeen = device.lastSeenAt
     ? new Date(device.lastSeenAt).toLocaleString('vi-VN')
     : 'Chưa kết nối lần nào';
@@ -263,9 +321,10 @@ function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf
         </View>
       </View>
 
-      {/* MOI: 1 nut bat/tat cho TUNG dau ra cua thiet bi */}
+      {/* 1 nut bat/tat cho TUNG dau ra cua thiet bi */}
       {device.outputs?.length ? (
         <View style={c.outputsBox}>
+          <Text style={c.sectionTitle}>ĐIỀU KHIỂN</Text>
           {device.outputs.map((output) => {
             const pending = pendingKeys.includes(keyOf(device._id, output.outputId));
             return (
@@ -292,8 +351,50 @@ function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf
           })}
         </View>
       ) : (
-        <Text style={c.noOutputs}>Thiết bị chưa khai báo dau ra nào</Text>
+        <Text style={c.noOutputs}>Thiết bị chưa khai báo đầu ra nào</Text>
       )}
+
+      {(() => {
+        const all = device.sensors || [];
+        const shown = all.filter((sv) => sv.present !== false);
+        if (all.length === 0) {
+          return (
+            <Text style={c.noOutputs}>
+              Chưa nhận danh sách cảm biến — nạp firmware mới cho ESP32 rồi khởi động lại để hiện công tắc cảm biến.
+            </Text>
+          );
+        }
+        const onCount = shown.filter((sv) => sv.enabled !== false).length;
+        return (
+          <View style={c.outputsBox}>
+            <Text style={c.sectionTitle}>CẢM BIẾN · {onCount}/{shown.length} đang đo</Text>
+            {shown.length === 0 && (
+              <Text style={c.noOutputs}>Không có cảm biến nào đang được cắm.</Text>
+            )}
+            {shown.map((sv) => {
+              const pending = pendingKeys.includes(sKeyOf(device._id, sv.sensorId));
+              const on = sv.enabled !== false;
+              return (
+                <View style={c.outputRow} key={sv.sensorId}>
+                  <Text style={c.outputIcon}>{sensorIcon(sv)}</Text>
+                  <Text style={c.outputLabel} numberOfLines={1}>
+                    {sv.label || sv.sensorId}
+                  </Text>
+                  <TouchableOpacity
+                    style={[c.toggleBtn, on && c.toggleBtnOn, pending && c.toggleBtnPending]}
+                    onPress={() => onToggleSensor(sv)}
+                    disabled={pending || !device.isActive}
+                  >
+                    <Text style={[c.toggleText, on && c.toggleTextOn]}>
+                      {pending ? 'Đang gửi...' : on ? 'Tắt' : 'Bật'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        );
+      })()}
 
       <View style={c.actions}>
         <TouchableOpacity style={c.actBtn} onPress={onChat}>
@@ -317,7 +418,7 @@ function DeviceCard({ device, onChat, onRevoke, onRegenerate, pendingKeys, keyOf
   );
 }
 
-// ─── Add Device Modal ───────────────────────────────────────────────────────
+//  Add Device Modal 
 function AddDeviceModal({ visible, onClose, onCreate }) {
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
@@ -375,7 +476,7 @@ function AddDeviceModal({ visible, onClose, onCreate }) {
   );
 }
 
-// ─── Show Key Modal ─────────────────────────────────────────────────────────
+//  Show Key Modal 
 function ShowKeyModal({ visible, title, apiKey, deviceId, onClose }) {
   const copyText = (label, value) => {
     if (!value) return;
@@ -439,13 +540,7 @@ function ShowKeyModal({ visible, title, apiKey, deviceId, onClose }) {
   );
 }
 
-// ─── Styles ─────────────────────────────────────────────────────────────────
-// LUU Y: vai gia tri spacing/mau trong `s` (header/list/empty*) va trong `c`
-// (card/topRow/iconWrap/icon) minh khong lay lai duoc nguyen van tu repo qua
-// project_search (phan do khong lien quan bug nen search khong tra ve het),
-// nen minh dat gia tri hop ly theo dung theme token (C/FONT/RADIUS/SHADOW)
-// dang dung trong chinh file nay. Neu lech mot chut voi giao dien hien tai,
-// chi can chinh lai vai so o day, cau truc/logic thi da dung 100%.
+//  Styles 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -522,6 +617,7 @@ const c = StyleSheet.create({
   toggleText: { fontSize: FONT.xs, fontWeight: '700', color: C.text },
   toggleTextOn: { color: '#15803D' },
   noOutputs: { fontSize: FONT.xs, color: C.dim, marginTop: 10, fontStyle: 'italic' },
+  sectionTitle: { fontSize: FONT.xs, fontWeight: '700', color: C.dim, letterSpacing: 0.5 },
 
   actions: {
     flexDirection: 'row', gap: 8, marginTop: 12,

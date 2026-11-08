@@ -1,18 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
+  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, Keyboard,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { Icon } from '../utils/icons';
 import { C, FONT, RADIUS, SHADOW } from '../utils/theme';
+import { messageApi } from '../api';
 import { useMessages } from '../hooks/useMessages';
 import { useTyping } from '../hooks/useTyping';
 import MessageBubble from '../components/MessageBubble';
 import TypingIndicator from '../components/TypingIndicator';
+import EmojiPicker from '../components/EmojiPicker';
+
+const MAX_FILE_BYTES = 15 * 1024 * 1024; // khop gioi han 15MB cua backend (multer)
 
 export default function ChatScreen({ route, navigation }) {
   const { conversationId, title, convType } = route.params;
   const [inputValue, setInputValue] = useState('');
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const {
     messages, hasMore, loadingOlder, flatListRef,
     loadMessages, loadOlder, sendMessage, recallMessage, deleteMessage, me,
@@ -37,6 +45,7 @@ export default function ChatScreen({ route, navigation }) {
   }, [conversationId]);
 
   const handleSend = () => {
+    if (!inputValue.trim()) return;
     sendMessage(inputValue);
     setInputValue('');
     stopTyping();
@@ -45,6 +54,90 @@ export default function ChatScreen({ route, navigation }) {
   const handleChangeText = (text) => {
     setInputValue(text);
     emitTyping();
+  };
+
+  // ── Emoji ──
+  const toggleEmoji = () => {
+    if (!showEmoji) Keyboard.dismiss();
+    setShowEmoji((v) => !v);
+  };
+  const insertEmoji = (emoji) => setInputValue((prev) => prev + emoji);
+
+  // ── Gui file / anh ──
+  const uploadAndSend = async ({ uri, name, type, size }) => {
+    if (size && size > MAX_FILE_BYTES) {
+      Alert.alert('Tệp quá lớn', 'Giới hạn mỗi tệp là 15 MB.');
+      return;
+    }
+    setUploading(true);
+    try {
+      // React Native cho phep append object {uri, name, type} vao FormData
+      const { data } = await messageApi.upload({ uri, name, type });
+      sendMessage({
+        content: '',
+        attachments: [{
+          url: data.url, fileType: data.fileType,
+          fileName: data.fileName, fileSize: data.fileSize,
+        }],
+      });
+    } catch (err) {
+      Alert.alert('Lỗi gửi tệp', err.response?.data?.message || err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const pickImage = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Cần quyền truy cập', 'Hãy cho phép truy cập ảnh trong cài đặt.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      const a = res.assets[0];
+      const ext = (a.mimeType || 'image/jpeg').split('/')[1] || 'jpg';
+      await uploadAndSend({
+        uri: a.uri,
+        name: a.fileName || `image_${Date.now()}.${ext}`,
+        type: a.mimeType || 'image/jpeg',
+        size: a.fileSize,
+      });
+    } catch (err) {
+      Alert.alert('Lỗi', err.message);
+    }
+  };
+
+  const pickDocument = async () => {
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets?.length) return;
+      const a = res.assets[0];
+      await uploadAndSend({
+        uri: a.uri,
+        name: a.name || `file_${Date.now()}`,
+        type: a.mimeType || 'application/octet-stream',
+        size: a.size,
+      });
+    } catch (err) {
+      Alert.alert('Lỗi', err.message);
+    }
+  };
+
+  const handleAttach = () => {
+    setShowEmoji(false);
+    Alert.alert('Đính kèm', 'Chọn loại tệp muốn gửi', [
+      { text: '🖼 Ảnh', onPress: pickImage },
+      { text: '📄 Tệp', onPress: pickDocument },
+      { text: 'Huỷ', style: 'cancel' },
+    ]);
   };
 
   const onLongPress = (msg) => {
@@ -92,11 +185,22 @@ export default function ChatScreen({ route, navigation }) {
         renderItem={renderItem}
         contentContainerStyle={s.list}
         showsVerticalScrollIndicator={false}
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
       />
 
       <TypingIndicator text={typingText} />
 
       <View style={s.inputArea}>
+        <TouchableOpacity style={[s.iconBtn, showEmoji && s.iconBtnActive]} onPress={toggleEmoji}>
+          <Text style={s.iconText}>😊</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={s.iconBtn} onPress={handleAttach} disabled={uploading}>
+          {uploading
+            ? <ActivityIndicator size="small" color={C.accent} />
+            : <Text style={s.iconText}>📎</Text>}
+        </TouchableOpacity>
+
         <View style={s.inputWrap}>
           <TextInput
             style={s.input}
@@ -104,6 +208,7 @@ export default function ChatScreen({ route, navigation }) {
             placeholderTextColor={C.dim}
             value={inputValue}
             onChangeText={handleChangeText}
+            onFocus={() => setShowEmoji(false)}
             onSubmitEditing={handleSend}
             returnKeyType="send"
             blurOnSubmit={false}
@@ -119,6 +224,8 @@ export default function ChatScreen({ route, navigation }) {
           <Icon name="send" size={16} color={inputValue.trim() ? C.white : C.dim} />
         </TouchableOpacity>
       </View>
+
+      <EmojiPicker visible={showEmoji} onSelect={insertEmoji} />
     </KeyboardAvoidingView>
   );
 }
@@ -132,9 +239,15 @@ const s = StyleSheet.create({
   },
   loadOlderText: { fontSize: FONT.sm, color: C.accent, fontWeight: '500' },
   inputArea: {
-    flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+    flexDirection: 'row', alignItems: 'flex-end', gap: 6,
     padding: 10, backgroundColor: C.panel, borderTopWidth: 1, borderTopColor: C.border,
   },
+  iconBtn: {
+    width: 38, height: 42, borderRadius: RADIUS.sm,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  iconBtnActive: { backgroundColor: C.panel2 },
+  iconText: { fontSize: 22 },
   inputWrap: {
     flex: 1, backgroundColor: C.panel2,
     borderWidth: 1, borderColor: C.border,
